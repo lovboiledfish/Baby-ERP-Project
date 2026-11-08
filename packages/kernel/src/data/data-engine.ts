@@ -1,15 +1,19 @@
 import { EncodedQueryError, parseEncodedQuery, type OrderBy, type QueryAst } from '@steward/shared';
 import { randomUUID } from 'node:crypto';
 import type { Db } from '../db/db';
-import { ConflictError, NotFoundError, ValidationError, toStewardError } from '../errors';
+import { ConflictError, ForbiddenError, NotFoundError, ValidationError, toStewardError } from '../errors';
 import type { MetaService } from '../meta/meta-service';
 import type { FieldMeta } from '../meta/types';
-import type { Session } from '../session';
+import type { AclService } from '../security/acl-service';
+import { resolveDynamic } from '../security/dynamic';
+import { hashPassword, isPasswordHash } from '../security/password';
+import type { AccessDecision, AclOperation } from '../security/types';
+import { SYSTEM_SESSION, type Session } from '../session';
 import { isUuid, quoteIdent } from '../util';
 import { writeAudit, type AuditEntry } from './audit';
 import { coerceValue, sameValue, toAuditString, toDbParam } from './coerce';
 import type { HookRegistry, Operation } from './hooks';
-import { compileCount, compileSelect, type CompiledColumn } from './query-compiler';
+import { compileCount, compileRowCheck, compileSelect, type CompiledColumn } from './query-compiler';
 
 export type RecordValues = Record<string, unknown>;
 /** false: raw values; true: display strings; 'all': { value, display_value } per field. */
@@ -22,6 +26,11 @@ export interface QueryOptions {
   limit?: number;
   offset?: number;
   displayValue?: DisplayMode;
+  /**
+   * Who is reading. Omitted = system context (no ACLs), which is what platform
+   * internals use. User-facing entry points must always pass the caller's session.
+   */
+  session?: Session;
 }
 
 export interface UpdateOptions {
@@ -30,6 +39,7 @@ export interface UpdateOptions {
 }
 
 const MAX_HOOK_DEPTH = 16;
+const REDACTED = '********';
 
 function toAst(query: string | QueryAst | undefined): QueryAst | undefined {
   if (query === undefined) return undefined;
@@ -48,10 +58,12 @@ function normalizeRow(row: Record<string, unknown>): RecordValues {
   return out;
 }
 
+const notFound = (table: string, sysId: string) => new NotFoundError(`Record ${table}:${sysId} not found`);
+
 /**
  * The data engine: the one place where records are read and written.
  * Every access path (REST, GlideRecord, metadata API, later sandboxed scripts)
- * goes through here, so validation, hooks, numbering and audit cannot be bypassed.
+ * goes through here, so ACLs, validation, hooks, numbering and audit cannot be bypassed.
  */
 export class DataEngine {
   private depth = 0;
@@ -60,6 +72,7 @@ export class DataEngine {
     private readonly rootDb: Db,
     readonly meta: MetaService,
     private readonly hooks: HookRegistry,
+    readonly acl: AclService,
     private readonly tx?: Db,
   ) {}
 
@@ -72,11 +85,13 @@ export class DataEngine {
   async transaction<T>(fn: (engine: DataEngine) => Promise<T>): Promise<T> {
     if (this.tx) return fn(this);
     const metaVersion = this.meta.version;
+    const aclVersion = this.acl.version;
     try {
-      return await this.rootDb.transaction((tx) => fn(new DataEngine(this.rootDb, this.meta, this.hooks, tx)));
+      return await this.rootDb.transaction((tx) => fn(new DataEngine(this.rootDb, this.meta, this.hooks, this.acl, tx)));
     } catch (e) {
-      // Metadata may have been reloaded from uncommitted rows; resync with the committed state.
+      // Caches may have been reloaded from uncommitted rows; resync with the committed state.
       if (this.meta.version !== metaVersion) await this.meta.load(this.rootDb);
+      if (this.acl.version !== aclVersion) await this.acl.load(this.rootDb);
       throw toStewardError(e) ?? e;
     }
   }
@@ -84,26 +99,30 @@ export class DataEngine {
   // ---------------------------------------------------------------- reads
 
   async query(table: string, opts: QueryOptions = {}): Promise<RecordValues[]> {
+    const session = opts.session ?? SYSTEM_SESSION;
+    const access = this.readAccessFor(session, table);
     const compiled = compileSelect(this.meta, {
       table,
-      query: toAst(opts.query),
+      query: resolveDynamic(toAst(opts.query), session),
       fields: opts.fields,
       orderBy: opts.orderBy,
       limit: opts.limit,
       offset: opts.offset,
+      access,
     });
     const res = await this.run(() => this.db.query(compiled.sql, compiled.params));
     const rows = res.rows.map((r) => normalizeRow(r as Record<string, unknown>));
-    return opts.displayValue ? this.applyDisplay(rows, compiled.columns, opts.displayValue) : rows;
+    return opts.displayValue ? this.applyDisplay(rows, compiled.columns, opts.displayValue, session) : rows;
   }
 
-  async count(table: string, query?: string | QueryAst): Promise<number> {
-    const compiled = compileCount(this.meta, table, toAst(query));
+  async count(table: string, query?: string | QueryAst, session: Session = SYSTEM_SESSION): Promise<number> {
+    const access = this.readAccessFor(session, table);
+    const compiled = compileCount(this.meta, table, resolveDynamic(toAst(query), session), access);
     const res = await this.run(() => this.db.query<{ count: number }>(compiled.sql, compiled.params));
     return res.rows[0]?.count ?? 0;
   }
 
-  async get(table: string, sysId: string, opts: Pick<QueryOptions, 'fields' | 'displayValue'> = {}): Promise<RecordValues | null> {
+  async get(table: string, sysId: string, opts: Pick<QueryOptions, 'fields' | 'displayValue' | 'session'> = {}): Promise<RecordValues | null> {
     if (!isUuid(sysId)) return null;
     const rows = await this.query(table, {
       ...opts,
@@ -111,6 +130,12 @@ export class DataEngine {
       limit: 1,
     });
     return rows[0] ?? null;
+  }
+
+  /** Whether `session` may perform `operation` on an existing record (table-level ACLs only). */
+  async canAccess(table: string, sysId: string, operation: AclOperation, session: Session): Promise<boolean> {
+    if (session.system) return true;
+    return this.matches(table, sysId, this.acl.tableDecision(session, table, operation));
   }
 
   // --------------------------------------------------------------- writes
@@ -132,10 +157,27 @@ export class DataEngine {
     const fields = this.meta.fields(table);
     const current: RecordValues = {};
 
+    // Conditional ACLs are checked against the inserted row, inside the transaction.
+    const rowChecks: Array<{ decision: AccessDecision; what: string }> = [];
+    if (!session.system) {
+      const d = this.acl.tableDecision(session, table, 'create');
+      if (d === false) throw new ForbiddenError(`Not authorized to create ${table} records`);
+      if (d !== true) rowChecks.push({ decision: d, what: `create this ${table} record` });
+    }
+
     for (const [key, raw] of Object.entries(values)) {
       if (raw === undefined) continue;
       const f = this.writableField(table, key, fields, true);
       if (f) current[key] = coerceValue(f, raw);
+    }
+    if (!session.system) {
+      for (const key of Object.keys(current)) {
+        const f = fields.get(key)!;
+        if (f.system || current[key] === null) continue;
+        const d = this.acl.fieldDecision(session, table, key, 'create');
+        if (d === false) throw new ForbiddenError(`Not authorized to set ${table}.${key}`);
+        if (d !== true) rowChecks.push({ decision: d, what: `set ${table}.${key}` });
+      }
     }
     for (const f of fields.values()) {
       if (!f.system && f.defaultValue != null && !(f.element in current)) current[f.element] = coerceValue(f, f.defaultValue);
@@ -149,7 +191,8 @@ export class DataEngine {
 
     await this.runHooks('before', 'insert', table, current, session);
     this.recoerce(table, current, {});
-    this.checkMandatory(table, current);
+    await this.hashPasswords(table, current);
+    this.checkMandatory(table, current, true);
 
     const now = new Date().toISOString();
     const row: Array<[string, unknown]> = [
@@ -171,6 +214,9 @@ export class DataEngine {
         `VALUES (${row.map((_, i) => `$${i + 1}`).join(', ')})`,
       row.map(([, v]) => v),
     );
+    for (const check of rowChecks) {
+      if (!(await this.matches(table, sysId, check.decision))) throw new ForbiddenError(`Not authorized to ${check.what}`);
+    }
 
     const record = (await this.get(table, sysId))!;
     if (t.audit) {
@@ -182,13 +228,17 @@ export class DataEngine {
       await writeAudit(this.db, session.userName, entries);
     }
     await this.runHooks('after', 'insert', table, { ...record }, session);
-    return record;
+    return this.visibleRecord(table, sysId, record, session);
   }
 
   private async doUpdate(table: string, sysId: string, values: RecordValues, session: Session, opts: UpdateOptions): Promise<RecordValues> {
     const t = this.meta.getTable(table);
     const fields = this.meta.fields(table);
     const previous = await this.lockRecord(table, sysId);
+    if (!session.system) {
+      if (!(await this.canAccess(table, sysId, 'read', session))) throw notFound(table, sysId);
+      if (!(await this.canAccess(table, sysId, 'write', session))) throw new ForbiddenError(`Not authorized to update ${table}:${sysId}`);
+    }
     if (opts.expectedModCount !== undefined && opts.expectedModCount !== previous.sys_mod_count) {
       throw new ConflictError(
         `Record ${table}:${sysId} was modified by someone else`,
@@ -202,13 +252,25 @@ export class DataEngine {
       const f = this.writableField(table, key, fields, false);
       if (f) current[key] = coerceValue(f, raw);
     }
+    if (!session.system) {
+      // Only fields the caller actually changes need field-level write access (PUT may echo read-only values).
+      for (const key of Object.keys(values)) {
+        const f = fields.get(key);
+        if (!f || f.system || values[key] === undefined) continue;
+        if (f.type !== 'password' && sameValue(f, previous[key], current[key])) continue;
+        if (!(await this.matches(table, sysId, this.acl.fieldDecision(session, table, key, 'write')))) {
+          throw new ForbiddenError(`Not authorized to change ${table}.${key}`);
+        }
+      }
+    }
 
     await this.runHooks('before', 'update', table, current, session, previous);
     this.recoerce(table, current, previous);
-    this.checkMandatory(table, current);
+    await this.hashPasswords(table, current);
+    this.checkMandatory(table, current, false);
 
     const changed = [...fields.values()].filter((f) => !f.system && !sameValue(f, previous[f.element], current[f.element]));
-    if (changed.length === 0) return previous;
+    if (changed.length === 0) return this.visibleRecord(table, sysId, previous, session);
 
     const params: unknown[] = [];
     const sets = changed.map((f) => {
@@ -234,19 +296,23 @@ export class DataEngine {
           table,
           documentKey: sysId,
           field: f.element,
-          oldValue: toAuditString(previous[f.element]),
-          newValue: toAuditString(record[f.element]),
+          oldValue: f.type === 'password' ? null : toAuditString(previous[f.element]),
+          newValue: f.type === 'password' ? REDACTED : toAuditString(record[f.element]),
           checkpoint,
         })),
       );
     }
     await this.runHooks('after', 'update', table, { ...record }, session, previous);
-    return record;
+    return this.visibleRecord(table, sysId, record, session);
   }
 
   private async doDelete(table: string, sysId: string, session: Session): Promise<void> {
     const t = this.meta.getTable(table);
     const previous = await this.lockRecord(table, sysId);
+    if (!session.system) {
+      if (!(await this.canAccess(table, sysId, 'read', session))) throw notFound(table, sysId);
+      if (!(await this.canAccess(table, sysId, 'delete', session))) throw new ForbiddenError(`Not authorized to delete ${table}:${sysId}`);
+    }
     await this.runHooks('before', 'delete', table, { ...previous }, session, previous);
     await this.db.query(`DELETE FROM ${quoteIdent(t.physical)} WHERE "sys_id" = $1`, [sysId]);
     if (t.audit) {
@@ -258,6 +324,29 @@ export class DataEngine {
   }
 
   // -------------------------------------------------------------- helpers
+
+  /** Read ACLs for a query; throws 403 when the table is not readable at all. */
+  private readAccessFor(session: Session, table: string) {
+    const access = this.acl.readAccess(session);
+    if (access && access.rows(table) === false) throw new ForbiddenError(`Not authorized to read ${table}`);
+    return access;
+  }
+
+  /** Does record `sysId` satisfy an access decision? */
+  private async matches(table: string, sysId: string, decision: AccessDecision): Promise<boolean> {
+    if (decision === true) return true;
+    if (decision === false) return false;
+    const check = compileRowCheck(this.meta, table, sysId, decision);
+    const res = await this.run(() => this.db.query(check.sql, check.params));
+    return res.rows.length > 0;
+  }
+
+  /** What a write returns to its caller: the record as the caller is allowed to read it. */
+  private async visibleRecord(table: string, sysId: string, record: RecordValues, session: Session): Promise<RecordValues> {
+    if (session.system) return record;
+    if (this.acl.tableDecision(session, table, 'read') === false) return { sys_id: sysId };
+    return (await this.get(table, sysId, { session })) ?? { sys_id: sysId };
+  }
 
   /** Run a statement, translating SQLSTATE errors (bad literals etc.) into StewardErrors. */
   private async run<T>(fn: () => Promise<T>): Promise<T> {
@@ -286,15 +375,26 @@ export class DataEngine {
     }
   }
 
-  private checkMandatory(table: string, current: RecordValues): void {
-    const missing = [...this.meta.fields(table).values()].filter((f) => !f.system && f.mandatory && current[f.element] == null);
+  /** One-way hash any plaintext password values (already-hashed values are kept). */
+  private async hashPasswords(table: string, current: RecordValues): Promise<void> {
+    for (const f of this.meta.fields(table).values()) {
+      const v = current[f.element];
+      if (f.type === 'password' && typeof v === 'string' && !isPasswordHash(v)) current[f.element] = await hashPassword(v);
+    }
+  }
+
+  private checkMandatory(table: string, current: RecordValues, isInsert: boolean): void {
+    const missing = [...this.meta.fields(table).values()].filter(
+      // Password values are never loaded back, so "mandatory" can only be enforced on insert.
+      (f) => !f.system && f.mandatory && current[f.element] == null && (isInsert || f.type !== 'password'),
+    );
     if (missing.length) {
       throw new ValidationError(`Mandatory fields are missing: ${missing.map((f) => f.element).join(', ')}`);
     }
   }
 
   private async lockRecord(table: string, sysId: string): Promise<RecordValues> {
-    if (!isUuid(sysId)) throw new NotFoundError(`Record ${table}:${sysId} not found`);
+    if (!isUuid(sysId)) throw notFound(table, sysId);
     const compiled = compileSelect(this.meta, {
       table,
       query: { groups: [[[{ field: 'sys_id', operator: '=', value: sysId }]]], orderBy: [] },
@@ -303,7 +403,7 @@ export class DataEngine {
     });
     const res = await this.db.query(compiled.sql, compiled.params);
     const row = res.rows[0];
-    if (!row) throw new NotFoundError(`Record ${table}:${sysId} not found`);
+    if (!row) throw notFound(table, sysId);
     return normalizeRow(row as Record<string, unknown>);
   }
 
@@ -336,8 +436,8 @@ export class DataEngine {
     }
   }
 
-  private async applyDisplay(rows: RecordValues[], columns: CompiledColumn[], mode: DisplayMode): Promise<RecordValues[]> {
-    // Batch-resolve reference display values per target table.
+  private async applyDisplay(rows: RecordValues[], columns: CompiledColumn[], mode: DisplayMode, session: Session): Promise<RecordValues[]> {
+    // Batch-resolve reference display values per target table (with the caller's ACLs).
     const wanted = new Map<string, Set<string>>();
     for (const col of columns) {
       if (col.field.type !== 'reference' || !col.field.reference) continue;
@@ -351,10 +451,12 @@ export class DataEngine {
     }
     const labels = new Map<string, string>();
     for (const [target, ids] of wanted) {
+      if (!session.system && this.acl.tableDecision(session, target, 'read') === false) continue;
       const df = this.meta.displayField(target);
       const found = await this.query(target, {
         query: { groups: [[[{ field: 'sys_id', operator: 'IN', value: [...ids].join(',') }]]], orderBy: [] },
         fields: ['sys_id', df.element],
+        session,
       });
       for (const r of found) labels.set(`${target}:${String(r.sys_id)}`, displayString(df, r[df.element], labels));
     }

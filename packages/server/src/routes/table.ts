@@ -1,6 +1,6 @@
-import { NotFoundError, ValidationError, type DisplayMode, type Instance } from '@steward/kernel';
-import type { FastifyPluginAsync } from 'fastify';
-import { sessionFor } from '../session';
+import { NotFoundError, ValidationError, type DisplayMode, type Instance, type Session } from '@steward/kernel';
+import type { FastifyPluginAsync, FastifyReply } from 'fastify';
+import { authenticate, sessionFor } from '../session';
 
 type Query = Record<string, string | undefined>;
 interface TableParams {
@@ -49,10 +49,14 @@ function ifMatch(raw: string | string[] | undefined): number | undefined {
 /** ServiceNow-compatible Table API: /api/now/table/{table}[/{sys_id}] */
 export function tableRoutes(instance: Instance): FastifyPluginAsync {
   const { engine } = instance;
+  const etag = (record: Record<string, unknown>) => (typeof record.sys_mod_count === 'number' ? `"${record.sys_mod_count}"` : undefined);
 
   return async (app) => {
+    app.addHook('preHandler', authenticate(instance));
+
     app.get<{ Params: TableParams; Querystring: Query }>('/:table', async (req, reply) => {
       const { table } = req.params;
+      const session = sessionFor(req);
       engine.meta.getTable(table);
       const q = req.query;
       const limit = Math.min(intParam(q.sysparm_limit, 'sysparm_limit', DEFAULT_LIMIT), MAX_LIMIT);
@@ -63,17 +67,20 @@ export function tableRoutes(instance: Instance): FastifyPluginAsync {
         limit,
         offset,
         displayValue: displayMode(q.sysparm_display_value),
+        session,
       });
-      const total = await engine.count(table, q.sysparm_query);
+      const total = await engine.count(table, q.sysparm_query, session);
       return reply.header('X-Total-Count', String(total)).send({ result: rows });
     });
 
     app.get<{ Params: RecordParams; Querystring: Query }>('/:table/:sys_id', async (req, reply) => {
       const { table, sys_id } = req.params;
+      const session = sessionFor(req);
       engine.meta.getTable(table);
       const record = await engine.get(table, sys_id, {
         fields: fieldList(req.query.sysparm_fields),
         displayValue: displayMode(req.query.sysparm_display_value),
+        session,
       });
       if (!record) throw new NotFoundError('No Record found', `Record ${table}:${sys_id} doesn't exist or is not visible`);
       const raw = await engine.get(table, sys_id, { fields: ['sys_mod_count'] });
@@ -82,27 +89,25 @@ export function tableRoutes(instance: Instance): FastifyPluginAsync {
 
     app.post<{ Params: TableParams }>('/:table', async (req, reply) => {
       const record = await engine.insert(req.params.table, body(req.body), sessionFor(req));
-      return reply
-        .status(201)
-        .header('Location', `/api/now/table/${req.params.table}/${String(record.sys_id)}`)
-        .header('ETag', `"${String(record.sys_mod_count)}"`)
-        .send({ result: record });
+      reply.status(201).header('Location', `/api/now/table/${req.params.table}/${String(record.sys_id)}`);
+      const tag = etag(record);
+      if (tag) reply.header('ETag', tag);
+      return reply.send({ result: record });
     });
 
-    const update = async (req: { params: RecordParams; body: unknown; headers: Record<string, string | string[] | undefined> }, session: ReturnType<typeof sessionFor>) =>
+    const update = async (req: { params: RecordParams; body: unknown; headers: Record<string, string | string[] | undefined> }, session: Session) =>
       engine.update(req.params.table, req.params.sys_id, body(req.body), session, {
         expectedModCount: ifMatch(req.headers['if-match']),
       });
 
-    app.patch<{ Params: RecordParams }>('/:table/:sys_id', async (req, reply) => {
-      const record = await update(req, sessionFor(req));
-      return reply.header('ETag', `"${String(record.sys_mod_count)}"`).send({ result: record });
-    });
+    const sendUpdated = (reply: FastifyReply, record: Record<string, unknown>) => {
+      const tag = etag(record);
+      if (tag) reply.header('ETag', tag);
+      return reply.send({ result: record });
+    };
 
-    app.put<{ Params: RecordParams }>('/:table/:sys_id', async (req, reply) => {
-      const record = await update(req, sessionFor(req));
-      return reply.header('ETag', `"${String(record.sys_mod_count)}"`).send({ result: record });
-    });
+    app.patch<{ Params: RecordParams }>('/:table/:sys_id', async (req, reply) => sendUpdated(reply, await update(req, sessionFor(req))));
+    app.put<{ Params: RecordParams }>('/:table/:sys_id', async (req, reply) => sendUpdated(reply, await update(req, sessionFor(req))));
 
     app.delete<{ Params: RecordParams }>('/:table/:sys_id', async (req, reply) => {
       await engine.delete(req.params.table, req.params.sys_id, sessionFor(req));

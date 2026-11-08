@@ -1,9 +1,9 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { ConflictError, NotFoundError, ValidationError } from '../errors';
 import { Instance } from '../instance';
-import type { Session } from '../session';
+import { systemSession } from '../session';
 
-const admin: Session = { userName: 'admin' };
+const admin = systemSession('admin');
 let inst: Instance;
 const ids: Record<string, string> = {};
 
@@ -221,7 +221,7 @@ describe('records', () => {
   });
 
   it('updates with optimistic locking and audits field changes', async () => {
-    const updated = await inst.engine.update('incident', ids.inc1, { priority: 1, state: 'in_progress' }, { userName: 'alice' }, { expectedModCount: 0 });
+    const updated = await inst.engine.update('incident', ids.inc1, { priority: 1, state: 'in_progress' }, systemSession('alice'), { expectedModCount: 0 });
     expect(updated).toMatchObject({ priority: 1, state: 'in_progress', sys_mod_count: 1, sys_updated_by: 'alice' });
 
     await expect(inst.engine.update('incident', ids.inc1, { priority: 3 }, admin, { expectedModCount: 0 })).rejects.toThrow(ConflictError);

@@ -2,8 +2,8 @@ import { describeIssues, fieldSpecSchema, tableSpecSchema, type FieldSpec, type 
 import type { z } from 'zod';
 import { coerceValue } from '../data/coerce';
 import type { DataEngine } from '../data/data-engine';
-import { ValidationError } from '../errors';
-import type { Session } from '../session';
+import { ForbiddenError, ValidationError } from '../errors';
+import { SYSTEM_SESSION, type Session } from '../session';
 import type { MetaService } from './meta-service';
 
 export interface FieldDescription {
@@ -113,12 +113,21 @@ export class MetaApi {
     });
   }
 
-  describe(table: string): TableDescription {
-    return describeTable(this.engine.meta, table);
+  /** Resolved schema of a table. With a user session: 403 if the table is unreadable, unreadable fields omitted. */
+  describe(table: string, session: Session = SYSTEM_SESSION): TableDescription {
+    const d = describeTable(this.engine.meta, table);
+    if (session.system) return d;
+    const { acl } = this.engine;
+    if (acl.tableDecision(session, table, 'read') === false) throw new ForbiddenError(`Not authorized to read ${table}`);
+    return { ...d, fields: d.fields.filter((f) => acl.fieldDecision(session, table, f.element, 'read') !== false) };
   }
 
-  list(): Array<Pick<TableDescription, 'name' | 'label' | 'extends'>> {
-    return this.engine.meta.listTables().map((t) => ({ name: t.name, label: t.label, extends: t.superClass }));
+  /** All tables (with a user session: only those the user may read at least partially). */
+  list(session: Session = SYSTEM_SESSION): Array<Pick<TableDescription, 'name' | 'label' | 'extends'>> {
+    return this.engine.meta
+      .listTables()
+      .filter((t) => session.system || this.engine.acl.tableDecision(session, t.name, 'read') !== false)
+      .map((t) => ({ name: t.name, label: t.label, extends: t.superClass }));
   }
 
   private async insertField(e: DataEngine, table: string, spec: FieldSpec, session: Session): Promise<void> {

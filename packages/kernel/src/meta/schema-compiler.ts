@@ -17,6 +17,7 @@ const PG_TYPES: Record<FieldType, string> = {
   string: 'text',
   text: 'text',
   script: 'text',
+  password: 'text',
   choice: 'text',
   sys_class_name: 'text',
   integer: 'integer',

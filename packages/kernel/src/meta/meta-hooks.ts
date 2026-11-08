@@ -3,6 +3,7 @@ import { rawInsert, systemValues } from '../db/raw';
 import type { DataEngine } from '../data/data-engine';
 import type { HookRegistry, SystemHook } from '../data/hooks';
 import { ValidationError } from '../errors';
+import { systemSession } from '../session';
 import { titleize } from '../util';
 import { planDDL } from './schema-compiler';
 
@@ -35,7 +36,7 @@ async function ensureNumbering(engine: DataEngine, table: string, prefix: string
     await engine.insert(
       'sys_dictionary',
       { name: table, element: 'number', column_label: 'Number', internal_type: 'string', max_length: 40, read_only: true },
-      { userName },
+      systemSession(userName),
     );
   }
 }

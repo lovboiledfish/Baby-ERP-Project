@@ -8,7 +8,7 @@ const dataDir = dataDirSetting === 'memory' ? undefined : path.resolve(baseDir, 
 const port = Number(process.env.PORT ?? 3000);
 const host = process.env.HOST ?? '127.0.0.1';
 
-const instance = await Instance.create({ dataDir });
+const instance = await Instance.create({ dataDir, adminPassword: process.env.STEWARD_ADMIN_PASSWORD || undefined });
 const app = await buildApp(instance, { logger: true });
 
 const shutdown = async (signal: string) => {
@@ -22,3 +22,9 @@ process.once('SIGTERM', () => void shutdown('SIGTERM'));
 
 await app.listen({ port, host });
 app.log.info(`Steward instance ready (data: ${dataDir ?? 'in-memory'})`);
+if (instance.generatedAdminPassword) {
+  app.log.warn(
+    `Generated a password for user "admin": ${instance.generatedAdminPassword}  ` +
+      '(shown once; change it via PATCH /api/now/table/sys_user/<sys_id> {"user_password": "..."} or set STEWARD_ADMIN_PASSWORD on first boot)',
+  );
+}

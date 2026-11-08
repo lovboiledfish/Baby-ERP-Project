@@ -1,11 +1,29 @@
-### Steward Phase 1 walkthrough (VS Code REST Client / JetBrains HTTP client)
+### Steward walkthrough (VS Code REST Client / JetBrains HTTP client)
+### Phase 2: every API call needs credentials. Start the server; on first boot it prints a generated
+### admin password (or set STEWARD_ADMIN_PASSWORD before the first boot).
 @base = http://127.0.0.1:3000
+@adminPassword = change-me
 
-### Health
+### Health (public)
 GET {{base}}/health
+
+### 0. Log in as admin -> copy result.token into @token
+# @name login
+POST {{base}}/api/steward/auth/login
+Content-Type: application/json
+
+{ "user_name": "admin", "password": "{{adminPassword}}" }
+
+###
+@token = {{login.response.body.result.token}}
+
+### Who am I?
+GET {{base}}/api/steward/auth/me
+Authorization: Bearer {{token}}
 
 ### 1. Create the root "task" table
 POST {{base}}/api/steward/meta/tables
+Authorization: Bearer {{token}}
 Content-Type: application/json
 
 {
@@ -16,49 +34,140 @@ Content-Type: application/json
     { "element": "priority", "type": "integer", "defaultValue": 4 },
     { "element": "state", "type": "choice", "defaultValue": "new",
       "choices": [ { "value": "new", "label": "New" }, { "value": "closed", "label": "Closed" } ] },
-    { "element": "assigned_to", "type": "reference", "reference": "sys_user" }
+    { "element": "assigned_to", "type": "reference", "reference": "sys_user" },
+    { "element": "caller", "type": "reference", "reference": "sys_user" },
+    { "element": "work_notes", "type": "text" }
   ]
 }
 
 ### 2. Extend it: incident (auto-numbered INC...)
 POST {{base}}/api/steward/meta/tables
+Authorization: Bearer {{token}}
 Content-Type: application/json
 
-{
-  "name": "incident",
-  "extends": "task",
-  "numberPrefix": "INC",
-  "fields": [ { "element": "caller", "type": "reference", "reference": "sys_user" } ]
-}
+{ "name": "incident", "extends": "task", "numberPrefix": "INC" }
 
 ### 3. Inspect the resolved schema (inherited fields, storage columns)
 GET {{base}}/api/steward/meta/tables/incident
+Authorization: Bearer {{token}}
 
-### 4. Find the admin user's sys_id
-GET {{base}}/api/now/table/sys_user?sysparm_query=user_name=admin&sysparm_fields=sys_id,name
-
-### 5. Create an incident (replace the caller sys_id)
-POST {{base}}/api/now/table/incident
+### 4. Create a role "itil" -> note its sys_id
+POST {{base}}/api/now/table/sys_user_role
+Authorization: Bearer {{token}}
 Content-Type: application/json
-X-Steward-User: alice
 
-{ "short_description": "Email is down", "caller": "<admin sys_id>" }
+{ "name": "itil" }
 
-### 6. Query with encoded query + dot-walk + display values
+### 5. Create two users (passwords are hashed and never returned)
+POST {{base}}/api/now/table/sys_user
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{ "user_name": "alice", "first_name": "Alice", "user_password": "alice-pw" }
+
+###
+POST {{base}}/api/now/table/sys_user
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{ "user_name": "carol", "first_name": "Carol", "user_password": "carol-pw" }
+
+### 6. Give alice the itil role
+POST {{base}}/api/now/table/sys_user_has_role
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{ "user": "<alice sys_id>", "role": "<itil sys_id>" }
+
+### 7. ACLs (admin has security_admin): itil reads all tasks; everyone reads tasks where they are the caller;
+###    only itil reads work_notes. Then link roles via sys_security_acl_role.
+POST {{base}}/api/now/table/sys_security_acl
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{ "name": "task", "operation": "read", "description": "itil reads all tasks" }
+
+###
+POST {{base}}/api/now/table/sys_security_acl_role
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{ "sys_security_acl": "<acl sys_id from above>", "sys_user_role": "<itil sys_id>" }
+
+###
+POST {{base}}/api/now/table/sys_security_acl
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{ "name": "task", "operation": "read", "condition": "caller=javascript:gs.getUserID()", "description": "callers read their own" }
+
+###
+POST {{base}}/api/now/table/sys_security_acl
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{ "name": "task.work_notes", "operation": "read", "description": "itil only" }
+
+###
+POST {{base}}/api/now/table/sys_security_acl_role
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{ "sys_security_acl": "<work_notes acl sys_id>", "sys_user_role": "<itil sys_id>" }
+
+### 8. Create incidents (one with carol as caller)
+POST {{base}}/api/now/table/incident
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{ "short_description": "Carol's printer", "caller": "<carol sys_id>", "work_notes": "VIP" }
+
+###
+POST {{base}}/api/now/table/incident
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{ "short_description": "Someone else's VPN", "work_notes": "internal" }
+
+### 9. Same query, different users (Basic auth: alice:alice-pw / carol:carol-pw)
+GET {{base}}/api/now/table/incident?sysparm_fields=number,short_description,work_notes
+Authorization: Basic alice:alice-pw
+
+###
+GET {{base}}/api/now/table/incident?sysparm_fields=number,short_description,work_notes
+Authorization: Basic carol:carol-pw
+
+### 10. Impersonate carol with the admin token, look, then stop
+POST {{base}}/api/steward/auth/impersonate
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{ "user_name": "carol" }
+
+###
+GET {{base}}/api/now/table/incident?sysparm_fields=number,short_description
+Authorization: Bearer {{token}}
+
+###
+DELETE {{base}}/api/steward/auth/impersonate
+Authorization: Bearer {{token}}
+
+### 11. Dot-walk + display values, optimistic update, audit (as admin)
 GET {{base}}/api/now/table/incident?sysparm_query=priority<=4^ORDERBYDESCsys_created_on&sysparm_fields=number,caller,caller.user_name,state&sysparm_display_value=true
+Authorization: Bearer {{token}}
 
-### 7. Polymorphism: tasks include incidents
-GET {{base}}/api/now/table/task?sysparm_fields=number,sys_class_name
-
-### 8. Optimistic update (send the ETag you got back as If-Match)
+###
 PATCH {{base}}/api/now/table/incident/<sys_id>
+Authorization: Bearer {{token}}
 Content-Type: application/json
 If-Match: "0"
 
 { "priority": 1 }
 
-### 9. Audit trail
+###
 GET {{base}}/api/now/table/sys_audit?sysparm_query=documentkey=<sys_id>^ORDERBYrecord_checkpoint&sysparm_fields=fieldname,oldvalue,newvalue,user,record_checkpoint
+Authorization: Bearer {{token}}
 
-### 10. The dictionary is just data
-GET {{base}}/api/now/table/sys_dictionary?sysparm_query=name=task&sysparm_fields=element,internal_type,column_name
+### 12. Log out
+POST {{base}}/api/steward/auth/logout
+Authorization: Bearer {{token}}

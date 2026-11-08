@@ -98,7 +98,7 @@ export class GlideRecord {
   }
 
   async query(): Promise<void> {
-    const rows = await this.engine.query(this.table, { query: this.ast, limit: this.limit, displayValue: 'all' });
+    const rows = await this.engine.query(this.table, { query: this.ast, limit: this.limit, displayValue: 'all', session: this.session });
     this.rows = rows as Array<Record<string, Cell>>;
     this.index = -1;
     this.isNew = false;
@@ -182,7 +182,7 @@ export class GlideRecord {
   }
 
   private async reload(sysId: string): Promise<void> {
-    const row = await this.engine.get(this.table, sysId, { displayValue: 'all' });
+    const row = await this.engine.get(this.table, sysId, { displayValue: 'all', session: this.session });
     this.rows = row ? [row as Record<string, Cell>] : [];
     this.index = -1;
     this.isNew = false;

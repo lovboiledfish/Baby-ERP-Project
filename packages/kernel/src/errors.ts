@@ -27,6 +27,20 @@ export class ConflictError extends StewardError {
   }
 }
 
+/** Missing or invalid credentials. */
+export class UnauthorizedError extends StewardError {
+  constructor(message = 'Authentication required', detail?: string) {
+    super(401, message, detail);
+  }
+}
+
+/** Authenticated, but an ACL (or role requirement) denies the operation. */
+export class ForbiddenError extends StewardError {
+  constructor(message: string, detail?: string) {
+    super(403, message, detail);
+  }
+}
+
 /** Map known errors (ours, Postgres SQLSTATE) into StewardErrors. Returns undefined for unknown errors. */
 export function toStewardError(e: unknown): StewardError | undefined {
   if (e instanceof StewardError) return e;

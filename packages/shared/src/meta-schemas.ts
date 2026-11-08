@@ -14,6 +14,7 @@ export const FIELD_TYPES = [
   'json',
   'guid',
   'script',
+  'password',
   'sys_class_name',
 ] as const;
 export type FieldType = (typeof FIELD_TYPES)[number];
@@ -32,6 +33,7 @@ export const CREATABLE_FIELD_TYPES = [
   'json',
   'guid',
   'script',
+  'password',
 ] as const satisfies readonly FieldType[];
 
 export const identifier = z

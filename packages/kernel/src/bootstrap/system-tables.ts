@@ -5,7 +5,16 @@ import { rawInsert, systemValues } from '../db/raw';
 import { planDDL } from '../meta/schema-compiler';
 import { titleize } from '../util';
 
-export const BOOTSTRAP_VERSION = 1;
+/**
+ * Version of the system schema + seed data. Bootstrapping is incremental:
+ * an instance created by an older version gets the missing system tables and
+ * fields added, and the seed steps newer than its recorded version applied.
+ *
+ *   1  Phase 1: dictionary, numbering, audit, properties, sys_user
+ *   2  Phase 2: identity (roles, groups, memberships), ACLs, sessions
+ */
+export const BOOTSTRAP_VERSION = 2;
+const VERSION_PROPERTY = 'glide.steward.bootstrap_version';
 
 interface BootstrapField {
   element: string;
@@ -17,6 +26,7 @@ interface BootstrapField {
   defaultValue?: string;
   display?: boolean;
   readOnly?: boolean;
+  choices?: Array<{ value: string; label: string }>;
 }
 
 interface BootstrapTable {
@@ -27,6 +37,14 @@ interface BootstrapTable {
   fields: BootstrapField[];
   unique?: string[][];
 }
+
+const ref = (element: string, reference: string, extra: Partial<BootstrapField> = {}): BootstrapField => ({
+  element,
+  type: 'reference',
+  reference,
+  mandatory: true,
+  ...extra,
+});
 
 /**
  * The self-describing system tables. They are created with hand-written DDL
@@ -128,8 +146,96 @@ export const SYSTEM_TABLES: BootstrapTable[] = [
       { element: 'name', type: 'string', maxLength: 151, display: true },
       { element: 'email', type: 'string', maxLength: 100 },
       { element: 'active', type: 'boolean', defaultValue: 'true' },
+      { element: 'user_password', type: 'password', label: 'Password' },
+      { element: 'locked_out', type: 'boolean', defaultValue: 'false' },
     ],
     unique: [['user_name']],
+  },
+  // ------------------------------------------------------------ identity (v2)
+  {
+    name: 'sys_user_role',
+    label: 'Role',
+    fields: [
+      { element: 'name', type: 'string', maxLength: 100, mandatory: true, display: true },
+      { element: 'description', type: 'text' },
+      { element: 'elevated_privilege', type: 'boolean', defaultValue: 'false' },
+    ],
+    unique: [['name']],
+  },
+  {
+    name: 'sys_user_role_contains',
+    label: 'Contained Role',
+    fields: [ref('role', 'sys_user_role'), ref('contains', 'sys_user_role')],
+    unique: [['role', 'contains']],
+  },
+  {
+    name: 'sys_user_group',
+    label: 'Group',
+    fields: [
+      { element: 'name', type: 'string', maxLength: 80, mandatory: true, display: true },
+      { element: 'description', type: 'text' },
+      { element: 'manager', type: 'reference', reference: 'sys_user' },
+      { element: 'email', type: 'string', maxLength: 100 },
+      { element: 'active', type: 'boolean', defaultValue: 'true' },
+    ],
+  },
+  {
+    name: 'sys_user_grmember',
+    label: 'Group Member',
+    fields: [ref('user', 'sys_user'), ref('group', 'sys_user_group')],
+    unique: [['user', 'group']],
+  },
+  {
+    name: 'sys_user_has_role',
+    label: 'User Role',
+    fields: [ref('user', 'sys_user'), ref('role', 'sys_user_role')],
+    unique: [['user', 'role']],
+  },
+  {
+    name: 'sys_group_has_role',
+    label: 'Group Role',
+    fields: [ref('group', 'sys_user_group'), ref('role', 'sys_user_role')],
+    unique: [['group', 'role']],
+  },
+  {
+    name: 'sys_security_acl',
+    label: 'Access Control',
+    fields: [
+      { element: 'name', type: 'string', maxLength: 160, mandatory: true, display: true },
+      {
+        element: 'operation',
+        type: 'choice',
+        mandatory: true,
+        choices: [
+          { value: 'read', label: 'read' },
+          { value: 'write', label: 'write' },
+          { value: 'create', label: 'create' },
+          { value: 'delete', label: 'delete' },
+        ],
+      },
+      { element: 'active', type: 'boolean', defaultValue: 'true' },
+      { element: 'admin_overrides', type: 'boolean', defaultValue: 'true' },
+      { element: 'condition', type: 'text' },
+      { element: 'description', type: 'text' },
+    ],
+  },
+  {
+    name: 'sys_security_acl_role',
+    label: 'Access Role',
+    fields: [ref('sys_security_acl', 'sys_security_acl', { label: 'Access control' }), ref('sys_user_role', 'sys_user_role', { label: 'Role' })],
+    unique: [['sys_security_acl', 'sys_user_role']],
+  },
+  {
+    name: 'sys_user_session',
+    label: 'User Session',
+    audit: false,
+    fields: [
+      ref('user', 'sys_user'),
+      { element: 'token_hash', type: 'string', maxLength: 64, mandatory: true, readOnly: true },
+      { element: 'expires', type: 'datetime', mandatory: true },
+      { element: 'impersonating', type: 'reference', reference: 'sys_user' },
+    ],
+    unique: [['token_hash']],
   },
 ];
 
@@ -138,24 +244,73 @@ export async function isBootstrapped(db: Db): Promise<boolean> {
   return res.rows[0]?.t != null;
 }
 
+async function tableExists(db: Db, physical: string): Promise<boolean> {
+  const res = await db.query<{ t: string | null }>(`SELECT to_regclass($1)::text AS t`, [`public.${physical}`]);
+  return res.rows[0]?.t != null;
+}
+
+async function columnExists(db: Db, physical: string, column: string): Promise<boolean> {
+  const res = await db.query(
+    `SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = $1 AND column_name = $2`,
+    [physical, column],
+  );
+  return res.rows.length > 0;
+}
+
+export async function bootstrapVersion(db: Db): Promise<number> {
+  if (!(await isBootstrapped(db))) return 0;
+  const res = await db.query<{ value: string | null }>(`SELECT "value" FROM "sys_properties" WHERE "name" = $1`, [VERSION_PROPERTY]);
+  return Number(res.rows[0]?.value ?? 1) || 1;
+}
+
+/**
+ * Create (or upgrade to) the current system schema. Idempotent: creates missing
+ * system tables, fields and choices, then runs seed steps newer than the
+ * instance's recorded version. Runs in one transaction.
+ */
 export async function bootstrap(db: Db): Promise<void> {
   await db.transaction(async (tx) => {
-    for (const t of SYSTEM_TABLES) {
-      for (const sql of planDDL({ kind: 'add_table', table: t.name })) await tx.exec(sql);
-      for (const f of t.fields) {
-        for (const sql of planDDL({ kind: 'add_field', physical: t.name, column: f.element, type: f.type })) {
-          await tx.exec(sql);
-        }
-      }
+    const current = await bootstrapVersion(tx);
+    if (current >= BOOTSTRAP_VERSION) return;
+    await ensureSchema(tx);
+    for (const step of SEED_STEPS) if (step.version > current) await step.run(tx);
+    await tx.query(`UPDATE "sys_properties" SET "value" = $1, "sys_updated_on" = now() WHERE "name" = $2`, [
+      String(BOOTSTRAP_VERSION),
+      VERSION_PROPERTY,
+    ]);
+  });
+}
+
+async function ensureSchema(tx: Db): Promise<void> {
+  // 1. Physical storage.
+  for (const t of SYSTEM_TABLES) {
+    const created = !(await tableExists(tx, t.name));
+    if (created) for (const sql of planDDL({ kind: 'add_table', table: t.name })) await tx.exec(sql);
+    for (const f of t.fields) {
+      if (!created && (await columnExists(tx, t.name, f.element))) continue;
+      for (const sql of planDDL({ kind: 'add_field', physical: t.name, column: f.element, type: f.type })) await tx.exec(sql);
+    }
+    if (created) {
       for (const cols of t.unique ?? []) {
         for (const sql of planDDL({ kind: 'add_unique', physical: t.name, columns: cols })) await tx.exec(sql);
       }
     }
+  }
 
-    const tableIds = new Map(SYSTEM_TABLES.map((t) => [t.name, randomUUID()]));
-    for (const t of SYSTEM_TABLES) {
+  // 2. Describe it in the dictionary (only what is missing).
+  const tables = new Set((await tx.query<{ name: string }>(`SELECT "name" FROM "sys_db_object"`)).rows.map((r) => r.name));
+  const dict = new Set(
+    (await tx.query<{ name: string; element: string }>(`SELECT "name", "element" FROM "sys_dictionary"`)).rows.map((r) => `${r.name}.${r.element}`),
+  );
+  const choices = new Set(
+    (await tx.query<{ name: string; element: string; value: string }>(`SELECT "name", "element", "value" FROM "sys_choice"`)).rows.map(
+      (r) => `${r.name}.${r.element}=${r.value}`,
+    ),
+  );
+  for (const t of SYSTEM_TABLES) {
+    if (!tables.has(t.name)) {
       await rawInsert(tx, 'sys_db_object', {
-        ...systemValues('sys_db_object', 'system', tableIds.get(t.name)),
+        ...systemValues('sys_db_object', 'system', randomUUID()),
         name: t.name,
         label: t.label,
         super_class: null,
@@ -164,7 +319,9 @@ export async function bootstrap(db: Db): Promise<void> {
         number_prefix: null,
         audit: t.audit ?? true,
       });
-      for (const f of t.fields) {
+    }
+    for (const f of t.fields) {
+      if (!dict.has(`${t.name}.${f.element}`)) {
         await rawInsert(tx, 'sys_dictionary', {
           ...systemValues('sys_dictionary', 'system'),
           name: t.name,
@@ -181,21 +338,89 @@ export async function bootstrap(db: Db): Promise<void> {
           read_only: f.readOnly ?? false,
         });
       }
+      for (const [i, c] of (f.choices ?? []).entries()) {
+        if (choices.has(`${t.name}.${f.element}=${c.value}`)) continue;
+        await rawInsert(tx, 'sys_choice', {
+          ...systemValues('sys_choice', 'system'),
+          name: t.name,
+          element: f.element,
+          value: c.value,
+          label: c.label,
+          sequence: (i + 1) * 100,
+          inactive: false,
+        });
+      }
     }
-
-    await rawInsert(tx, 'sys_properties', {
-      ...systemValues('sys_properties', 'system'),
-      name: 'glide.steward.bootstrap_version',
-      value: String(BOOTSTRAP_VERSION),
-      description: 'Version of the system table bootstrap applied to this instance.',
-    });
-    await rawInsert(tx, 'sys_user', {
-      ...systemValues('sys_user', 'system'),
-      user_name: 'admin',
-      first_name: 'System',
-      last_name: 'Administrator',
-      name: 'System Administrator',
-      active: true,
-    });
-  });
+  }
 }
+
+// ------------------------------------------------------------------ seeds
+
+async function findId(tx: Db, physical: string, column: string, value: string): Promise<string | null> {
+  const res = await tx.query<{ sys_id: string }>(`SELECT "sys_id" FROM "${physical}" WHERE "${column}" = $1 LIMIT 1`, [value]);
+  return res.rows[0]?.sys_id ?? null;
+}
+
+async function insertRow(tx: Db, table: string, values: Record<string, unknown>): Promise<string> {
+  const sysId = randomUUID();
+  await rawInsert(tx, table, { ...systemValues(table, 'system', sysId), ...values });
+  return sysId;
+}
+
+/** Seed ACL definitions: [name, operation, roles, adminOverrides, description]. */
+const SEED_ACLS: Array<[string, string, string[], boolean, string]> = [
+  ...['read', 'write', 'create', 'delete'].flatMap((op): Array<[string, string, string[], boolean, string]> => [
+    ['sys_security_acl', op, ['security_admin'], false, 'Only security admins manage ACLs'],
+    ['sys_security_acl_role', op, ['security_admin'], false, 'Only security admins manage ACL roles'],
+  ]),
+  ['sys_user', 'read', [], true, 'Any authenticated user can look up users'],
+  ['sys_user_group', 'read', [], true, 'Any authenticated user can look up groups'],
+  ['sys_user_role', 'read', [], true, 'Any authenticated user can look up roles'],
+];
+
+const SEED_STEPS: Array<{ version: number; run(tx: Db): Promise<void> }> = [
+  {
+    version: 1,
+    async run(tx) {
+      await rawInsert(tx, 'sys_properties', {
+        ...systemValues('sys_properties', 'system'),
+        name: VERSION_PROPERTY,
+        value: '1',
+        description: 'Version of the system table bootstrap applied to this instance.',
+      });
+      await insertRow(tx, 'sys_user', {
+        user_name: 'admin',
+        first_name: 'System',
+        last_name: 'Administrator',
+        name: 'System Administrator',
+        active: true,
+        locked_out: false,
+      });
+    },
+  },
+  {
+    version: 2,
+    async run(tx) {
+      await tx.query(`UPDATE "sys_user" SET "locked_out" = false WHERE "locked_out" IS NULL`);
+      const roles: Record<string, string> = {};
+      for (const [name, description, elevated] of [
+        ['admin', 'Full access to the instance, except elevated privileges', false],
+        ['security_admin', 'Manage access controls (elevated)', true],
+        ['impersonator', 'May impersonate non-admin users', false],
+      ] as const) {
+        roles[name] = (await findId(tx, 'sys_user_role', 'name', name)) ?? (await insertRow(tx, 'sys_user_role', { name, description, elevated_privilege: elevated }));
+      }
+      const adminUser = await findId(tx, 'sys_user', 'user_name', 'admin');
+      if (adminUser) {
+        for (const role of ['admin', 'security_admin']) {
+          const exists = await tx.query(`SELECT 1 FROM "sys_user_has_role" WHERE "user" = $1 AND "role" = $2`, [adminUser, roles[role]]);
+          if (!exists.rows.length) await insertRow(tx, 'sys_user_has_role', { user: adminUser, role: roles[role] });
+        }
+      }
+      for (const [name, operation, aclRoles, adminOverrides, description] of SEED_ACLS) {
+        const acl = await insertRow(tx, 'sys_security_acl', { name, operation, active: true, admin_overrides: adminOverrides, condition: null, description });
+        for (const role of aclRoles) await insertRow(tx, 'sys_security_acl_role', { sys_security_acl: acl, sys_user_role: roles[role] });
+      }
+    },
+  },
+];
