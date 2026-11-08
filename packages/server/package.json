@@ -1,0 +1,18 @@
+{
+  "name": "@steward/server",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "dev": "tsx watch src/main.ts",
+    "start": "tsx src/main.ts"
+  },
+  "dependencies": {
+    "@steward/kernel": "*",
+    "@steward/shared": "*",
+    "fastify": "^5.12.8"
+  }
+}

@@ -1,0 +1,64 @@
+### Steward Phase 1 walkthrough (VS Code REST Client / JetBrains HTTP client)
+@base = http://127.0.0.1:3000
+
+### Health
+GET {{base}}/health
+
+### 1. Create the root "task" table
+POST {{base}}/api/steward/meta/tables
+Content-Type: application/json
+
+{
+  "name": "task",
+  "fields": [
+    { "element": "number", "type": "string" },
+    { "element": "short_description", "type": "string", "maxLength": 160, "mandatory": true },
+    { "element": "priority", "type": "integer", "defaultValue": 4 },
+    { "element": "state", "type": "choice", "defaultValue": "new",
+      "choices": [ { "value": "new", "label": "New" }, { "value": "closed", "label": "Closed" } ] },
+    { "element": "assigned_to", "type": "reference", "reference": "sys_user" }
+  ]
+}
+
+### 2. Extend it: incident (auto-numbered INC...)
+POST {{base}}/api/steward/meta/tables
+Content-Type: application/json
+
+{
+  "name": "incident",
+  "extends": "task",
+  "numberPrefix": "INC",
+  "fields": [ { "element": "caller", "type": "reference", "reference": "sys_user" } ]
+}
+
+### 3. Inspect the resolved schema (inherited fields, storage columns)
+GET {{base}}/api/steward/meta/tables/incident
+
+### 4. Find the admin user's sys_id
+GET {{base}}/api/now/table/sys_user?sysparm_query=user_name=admin&sysparm_fields=sys_id,name
+
+### 5. Create an incident (replace the caller sys_id)
+POST {{base}}/api/now/table/incident
+Content-Type: application/json
+X-Steward-User: alice
+
+{ "short_description": "Email is down", "caller": "<admin sys_id>" }
+
+### 6. Query with encoded query + dot-walk + display values
+GET {{base}}/api/now/table/incident?sysparm_query=priority<=4^ORDERBYDESCsys_created_on&sysparm_fields=number,caller,caller.user_name,state&sysparm_display_value=true
+
+### 7. Polymorphism: tasks include incidents
+GET {{base}}/api/now/table/task?sysparm_fields=number,sys_class_name
+
+### 8. Optimistic update (send the ETag you got back as If-Match)
+PATCH {{base}}/api/now/table/incident/<sys_id>
+Content-Type: application/json
+If-Match: "0"
+
+{ "priority": 1 }
+
+### 9. Audit trail
+GET {{base}}/api/now/table/sys_audit?sysparm_query=documentkey=<sys_id>^ORDERBYrecord_checkpoint&sysparm_fields=fieldname,oldvalue,newvalue,user,record_checkpoint
+
+### 10. The dictionary is just data
+GET {{base}}/api/now/table/sys_dictionary?sysparm_query=name=task&sysparm_fields=element,internal_type,column_name

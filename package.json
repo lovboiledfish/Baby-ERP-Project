@@ -1,0 +1,29 @@
+{
+  "name": "steward",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Steward - a toy, from-scratch take on a metadata-driven application platform (Now Platform style).",
+  "type": "module",
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "npm run dev -w @steward/server",
+    "start": "npm run start -w @steward/server",
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "devDependencies": {
+    "@types/node": "^24.19.2",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2",
+    "vitest": "^5.1.0"
+  },
+  "allowScripts": {
+    "esbuild@0.28.2": true
+  }
+}

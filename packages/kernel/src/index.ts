@@ -1,0 +1,14 @@
+export { Instance, type InstanceOptions } from './instance';
+export type { Db, QueryResult, Row } from './db/db';
+export { PgliteDb } from './db/pglite';
+export { DataEngine, type DisplayMode, type QueryOptions, type RecordValues, type UpdateOptions } from './data/data-engine';
+export { GlideRecord, QueryCondition } from './data/glide-record';
+export { HookRegistry, type HookContext, type Operation, type SystemHook } from './data/hooks';
+export { compileCount, compileSelect, type CompiledQuery, type SelectSpec } from './data/query-compiler';
+export { MetaService } from './meta/meta-service';
+export { MetaApi, describeTable, type FieldDescription, type TableDescription } from './meta/meta-api';
+export { planDDL, pgType, type DictionaryChange } from './meta/schema-compiler';
+export type { ChoiceMeta, FieldMeta, TableMeta } from './meta/types';
+export { SYSTEM_TABLES } from './bootstrap/system-tables';
+export { ConflictError, NotFoundError, StewardError, ValidationError, toStewardError } from './errors';
+export { SYSTEM_SESSION, type Session } from './session';
