@@ -9,6 +9,7 @@
   "dependencies": {
     "@electric-sql/pglite": "^0.5.15",
     "@steward/shared": "*",
+    "isolated-vm": "^7.0.2",
     "zod": "^4.6.7"
   }
 }

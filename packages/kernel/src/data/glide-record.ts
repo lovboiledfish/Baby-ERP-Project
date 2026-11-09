@@ -47,6 +47,7 @@ export class GlideRecord {
   private display: Record<string, string> = {};
   private pending: RecordValues = {};
   private isNew = false;
+  private workflow = true;
 
   constructor(
     private readonly engine: DataEngine,
@@ -95,6 +96,10 @@ export class GlideRecord {
 
   setLimit(n: number): void {
     this.limit = n;
+  }
+
+  setWorkflow(enable: boolean): void {
+    this.workflow = Boolean(enable);
   }
 
   async query(): Promise<void> {
@@ -162,7 +167,7 @@ export class GlideRecord {
   }
 
   async insert(): Promise<string> {
-    const record = await this.engine.insert(this.table, { ...this.values, ...this.pending }, this.session);
+    const record = await this.engine.insert(this.table, { ...this.values, ...this.pending }, this.session, { workflow: this.workflow });
     await this.reload(String(record.sys_id));
     return this.getUniqueValue();
   }
@@ -170,14 +175,14 @@ export class GlideRecord {
   async update(): Promise<string> {
     if (this.isNew || !this.values.sys_id) return this.insert();
     const sysId = String(this.values.sys_id);
-    await this.engine.update(this.table, sysId, this.pending, this.session);
+    await this.engine.update(this.table, sysId, this.pending, this.session, { workflow: this.workflow });
     await this.reload(sysId);
     return sysId;
   }
 
   async deleteRecord(): Promise<boolean> {
     if (!this.values.sys_id) return false;
-    await this.engine.delete(this.table, String(this.values.sys_id), this.session);
+    await this.engine.delete(this.table, String(this.values.sys_id), this.session, { workflow: this.workflow });
     return true;
   }
 

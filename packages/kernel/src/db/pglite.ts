@@ -18,6 +18,7 @@ class AsyncMutex {
 
 class PgliteTx implements Db {
   readonly inTransaction = true;
+  private spSeq = 0;
 
   constructor(private readonly tx: TxLike) {}
 
@@ -30,8 +31,18 @@ class PgliteTx implements Db {
     await this.tx.exec(sql);
   }
 
-  transaction<T>(fn: (tx: Db) => Promise<T>): Promise<T> {
-    return fn(this);
+  async transaction<T>(fn: (tx: Db) => Promise<T>): Promise<T> {
+    const sp = `sp_${++this.spSeq}`;
+    await this.tx.exec(`SAVEPOINT ${sp}`);
+    try {
+      const res = await fn(this);
+      await this.tx.exec(`RELEASE SAVEPOINT ${sp}`);
+      return res;
+    } catch (e) {
+      await this.tx.exec(`ROLLBACK TO SAVEPOINT ${sp}`);
+      await this.tx.exec(`RELEASE SAVEPOINT ${sp}`);
+      throw e;
+    }
   }
 
   async close(): Promise<void> {

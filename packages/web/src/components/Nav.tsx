@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import { useApp } from '../context';
-import { formUrl, listUrl, tableBuilderUrl } from '../lib/routes';
+import { formUrl, listUrl, scriptsUrl, tableBuilderUrl } from '../lib/routes';
 import { Link } from './common';
 
 /** Application navigator: every table the user may read, filterable. */
@@ -36,6 +36,15 @@ export function Nav() {
             </li>
             <li>
               <Link href={formUrl('sys_db_object', '-1')}>New table record</Link>
+            </li>
+            <li>
+              <Link href={listUrl('sys_script')}>Business Rules</Link>
+            </li>
+            <li>
+              <Link href={listUrl('sys_script_include')}>Script Includes</Link>
+            </li>
+            <li>
+              <Link href={scriptsUrl()}>Scripts - Background</Link>
             </li>
           </ul>
         </div>

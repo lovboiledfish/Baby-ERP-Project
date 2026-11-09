@@ -1,9 +1,10 @@
 import { EncodedQueryError, parseEncodedQuery, type QueryAst } from '@steward/shared';
 import type { Db } from '../db/db';
 import type { MetaService } from '../meta/meta-service';
+import { checkScriptSyntax } from '../script/sandbox';
 import type { Session } from '../session';
 import { resolveDynamic } from './dynamic';
-import { ACL_OPERATIONS, type AccessDecision, type AclOperation, type ReadAccess } from './types';
+import { ACL_OPERATIONS, type AccessDecision, type AclOperation, type ReadAccess, type ScriptedAccessClause } from './types';
 
 export interface AclRule {
   sysId: string;
@@ -13,7 +14,9 @@ export interface AclRule {
   adminOverrides: boolean;
   /** Parsed condition; null = no condition. */
   condition: QueryAst | null;
-  /** The stored condition could not be parsed: the rule never passes (fail closed). */
+  /** Optional sandbox script; null = no script. */
+  script: string | null;
+  /** The stored condition or script could not be parsed: the rule never passes (fail closed). */
   broken: boolean;
   /** Role names; the rule passes the role check if empty or the user has any of them. */
   roles: string[];
@@ -25,6 +28,7 @@ interface AclRow {
   operation: string;
   admin_overrides: boolean | null;
   condition: string | null;
+  script: string | null;
 }
 
 export const ADMIN_ROLE = 'admin';
@@ -35,7 +39,7 @@ export const ADMIN_ROLE = 'admin';
  * Resolution follows ServiceNow: walk from the most specific name to the most
  * generic one; the first level that has any active rule for the operation is
  * decisive, and access is granted if at least one rule at that level passes
- * (roles AND condition).
+ * (roles AND condition AND script).
  *
  *   table level: incident -> task -> *
  *   field level: incident.priority -> incident.* -> task.priority -> task.* -> *.priority -> *.*
@@ -57,7 +61,7 @@ export class AclService {
 
   async load(db: Db): Promise<void> {
     const acls = await db.query<AclRow>(
-      `SELECT "sys_id", "name", "operation", "admin_overrides", "condition" FROM "sys_security_acl" WHERE "active" IS NOT FALSE`,
+      `SELECT "sys_id", "name", "operation", "admin_overrides", "condition", "script" FROM "sys_security_acl" WHERE "active" IS NOT FALSE`,
     );
     const roleRows = await db.query<{ acl: string; role: string }>(
       `SELECT ar."sys_security_acl" AS acl, r."name" AS role
@@ -82,12 +86,21 @@ export class AclService {
           broken = true;
         }
       }
+      const script = a.script && a.script.trim() ? a.script : null;
+      if (script) {
+        try {
+          checkScriptSyntax(script);
+        } catch {
+          broken = true;
+        }
+      }
       const rule: AclRule = {
         sysId: a.sys_id,
         name: a.name,
         operation: a.operation as AclOperation,
         adminOverrides: a.admin_overrides !== false,
         condition,
+        script,
         broken,
         roles: rolesByAcl.get(a.sys_id) ?? [],
       };
@@ -105,13 +118,13 @@ export class AclService {
 
   /** ServiceNow semantics: admin implicitly has every role except elevated ones. */
   hasRole(session: Session, role: string): boolean {
-    if (session.system) return true;
+    if (session.system && !session.script) return true;
     if (session.roles.has(role)) return true;
     return session.roles.has(ADMIN_ROLE) && !this.elevated.has(role);
   }
 
   isAdmin(session: Session): boolean {
-    return session.system || session.roles.has(ADMIN_ROLE);
+    return (session.system && !session.script) || session.roles.has(ADMIN_ROLE);
   }
 
   /** Rules matching an exact ACL name (for inspection and tests). */
@@ -156,15 +169,30 @@ export class AclService {
 
   private evaluateLevel(session: Session, rules: AclRule[]): AccessDecision {
     const admin = this.isAdmin(session);
-    const conditions: QueryAst[] = [];
+    const clauses: ScriptedAccessClause[] = [];
     for (const rule of rules) {
       if (admin && rule.adminOverrides) return true;
       if (rule.broken) continue;
       if (rule.roles.length > 0 && !rule.roles.some((r) => this.hasRole(session, r))) continue;
-      if (!rule.condition) return true;
-      conditions.push(resolveDynamic(rule.condition, session));
+      if (!rule.condition && !rule.script) return true;
+      clauses.push({
+        aclId: rule.sysId,
+        name: rule.name,
+        condition: rule.condition ? resolveDynamic(rule.condition, session) : null,
+        script: rule.script,
+      });
     }
-    return conditions.length ? conditions : false;
+    if (clauses.length === 0) return false;
+    if (!clauses.some((c) => c.script !== null)) {
+      return clauses.map((c) => c.condition!);
+    }
+    const allHaveCond = clauses.every((c) => c.condition !== null);
+    return {
+      kind: 'scripted',
+      session,
+      sqlConditions: allHaveCond ? clauses.map((c) => c.condition!) : null,
+      clauses,
+    };
   }
 }
 

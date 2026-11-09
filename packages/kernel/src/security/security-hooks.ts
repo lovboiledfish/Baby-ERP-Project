@@ -2,6 +2,7 @@ import { EncodedQueryError, parseEncodedQuery } from '@steward/shared';
 import type { HookRegistry, SystemHook } from '../data/hooks';
 import { compileSelect } from '../data/query-compiler';
 import { ForbiddenError, StewardError, ValidationError } from '../errors';
+import { checkScriptSyntax } from '../script/sandbox';
 import { SYSTEM_SESSION } from '../session';
 import { parseAclName } from './acl-service';
 import { resolveDynamic } from './dynamic';
@@ -37,16 +38,22 @@ export function securityHooks(): SystemHook[] {
         current.name = name;
 
         const condition = typeof current.condition === 'string' ? current.condition.trim() : '';
-        if (!condition) return;
-        if (table === '*') throw new ValidationError(`ACL ${name}: conditions are not supported on * rules`);
-        try {
-          const ast = resolveDynamic(parseEncodedQuery(condition), SYSTEM_SESSION);
-          compileSelect(meta, { table, query: ast, fields: ['sys_id'] });
-        } catch (e) {
-          if (e instanceof EncodedQueryError || e instanceof StewardError) {
-            throw new ValidationError(`ACL ${name}: invalid condition`, e.message);
+        if (condition) {
+          if (table === '*') throw new ValidationError(`ACL ${name}: conditions are not supported on * rules`);
+          try {
+            const ast = resolveDynamic(parseEncodedQuery(condition), SYSTEM_SESSION);
+            compileSelect(meta, { table, query: ast, fields: ['sys_id'] });
+          } catch (e) {
+            if (e instanceof EncodedQueryError || e instanceof StewardError) {
+              throw new ValidationError(`ACL ${name}: invalid condition`, e.message);
+            }
+            throw e;
           }
-          throw e;
+        }
+
+        const script = typeof current.script === 'string' ? current.script.trim() : '';
+        if (script) {
+          checkScriptSyntax(script, { label: `ACL ${name}` });
         }
       },
     },
@@ -106,6 +113,7 @@ export async function elevatedRolesOfUser(db: Engine['db'], userId: string): Pro
  * (Impersonation is guarded in AuthService.)
  */
 function elevatedRoleGuards(): SystemHook[] {
+  const isInternal = (session: HookSession) => session.system && !session.script;
   const deny = (what: string) => {
     throw new ForbiddenError(`Only holders of the elevated role can ${what}`);
   };
@@ -123,12 +131,32 @@ function elevatedRoleGuards(): SystemHook[] {
     when: 'before',
     operations: ['insert', 'update', 'delete'],
     async run({ engine, session, current, previous }) {
-      if (session.system) return;
+      if (isInternal(session)) return;
       const roles = await elevatedRolesWithin(engine.db, new Set([current[column], previous?.[column]]));
       requireAll(engine, session, roles, (role) => `grant or revoke ${role}`);
     },
   });
   return [
+    {
+      name: 'sys_security_acl: require security_admin',
+      table: 'sys_security_acl',
+      when: 'before',
+      operations: ['insert', 'update', 'delete'],
+      run({ engine, session }) {
+        if (isInternal(session)) return;
+        if (!engine.acl.hasRole(session, 'security_admin')) deny('modify access controls (security_admin)');
+      },
+    },
+    {
+      name: 'sys_security_acl_role: require security_admin',
+      table: 'sys_security_acl_role',
+      when: 'before',
+      operations: ['insert', 'update', 'delete'],
+      run({ engine, session }) {
+        if (isInternal(session)) return;
+        if (!engine.acl.hasRole(session, 'security_admin')) deny('modify access control roles (security_admin)');
+      },
+    },
     guardRoleRef('sys_user_has_role', 'role'),
     guardRoleRef('sys_group_has_role', 'role'),
     guardRoleRef('sys_user_role_contains', 'role'),
@@ -139,7 +167,7 @@ function elevatedRoleGuards(): SystemHook[] {
       when: 'before',
       operations: ['insert', 'update', 'delete'],
       async run({ engine, session, current, previous }) {
-        if (session.system) return;
+        if (isInternal(session)) return;
         for (const group of new Set([current.group, previous?.group])) {
           requireAll(engine, session, await groupElevated(engine, group), (role) => `change membership of a group that grants ${role}`);
         }
@@ -151,7 +179,7 @@ function elevatedRoleGuards(): SystemHook[] {
       when: 'before',
       operations: ['update'],
       async run({ engine, session, current, previous }) {
-        if (session.system || !previous || previous.active !== false || current.active === false) return;
+        if (isInternal(session) || !previous || previous.active !== false || current.active === false) return;
         requireAll(engine, session, await groupElevated(engine, previous.sys_id), (role) => `reactivate a group that grants ${role}`);
       },
     },
@@ -161,7 +189,7 @@ function elevatedRoleGuards(): SystemHook[] {
       when: 'before',
       operations: ['update'],
       async run({ engine, session, current, previous }) {
-        if (session.system || !previous) return;
+        if (isInternal(session) || !previous) return;
         // Password values are never loaded back, so any value here is a new password.
         const credentialsChange = current.user_password != null || current.user_name !== previous.user_name;
         if (!credentialsChange) return;
@@ -177,7 +205,7 @@ function elevatedRoleGuards(): SystemHook[] {
       when: 'before',
       operations: ['insert', 'update'],
       run({ session }) {
-        if (!session.system) throw new ForbiddenError('Sessions can only be created or changed by logging in');
+        if (!isInternal(session)) throw new ForbiddenError('Sessions can only be created or changed by logging in');
       },
     },
     {
@@ -186,7 +214,7 @@ function elevatedRoleGuards(): SystemHook[] {
       when: 'before',
       operations: ['insert', 'update', 'delete'],
       run({ engine, session, current, previous }) {
-        if (session.system) return;
+        if (isInternal(session)) return;
         const name = String(previous?.name ?? current.name ?? '');
         const touchesElevated = current.elevated_privilege === true || previous?.elevated_privilege === true;
         if (touchesElevated && !engine.acl.hasRole(session, name)) deny(`modify the elevated role ${name}`);

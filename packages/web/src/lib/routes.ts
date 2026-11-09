@@ -4,12 +4,14 @@
  *   /<table>_list.do?sysparm_query=...         list
  *   /<table>.do?sys_id=<id|-1>&sysparm_query=  form (-1 = new record, query = prefill)
  *   /now/table_builder[?table=<name>]          create a table / add fields
+ *   /sys.scripts.do                            background scripts (admin)
  */
 export type Route =
   | { kind: 'home' }
   | { kind: 'list'; table: string; query: string; offset: number; view: string }
   | { kind: 'form'; table: string; sysId: string; query: string; view: string }
   | { kind: 'table_builder'; table: string | null }
+  | { kind: 'scripts' }
   | { kind: 'not_found'; path: string };
 
 const TABLE = '[a-z][a-z0-9_]*';
@@ -21,6 +23,7 @@ export function parseRoute(pathname: string, search: string): Route {
   const view = params.get('sysparm_view') ?? '';
   if (pathname === '/' || pathname === '/now/nav' || pathname === '/now' || pathname === '/now/') return { kind: 'home' };
   if (pathname === '/now/table_builder') return { kind: 'table_builder', table: params.get('table') || null };
+  if (pathname === '/sys.scripts.do' || pathname === '/now/scripts') return { kind: 'scripts' };
   const list = LIST_RE.exec(pathname);
   if (list) {
     const offset = Number(params.get('sysparm_offset') ?? 0);
@@ -59,6 +62,10 @@ export function formUrl(table: string, sysId: string, opts: { query?: string; vi
 
 export function tableBuilderUrl(table?: string): string {
   return `/now/table_builder${qs({ table })}`;
+}
+
+export function scriptsUrl(): string {
+  return '/sys.scripts.do';
 }
 
 // ------------------------------------------------------------ navigation

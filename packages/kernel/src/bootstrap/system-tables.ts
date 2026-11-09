@@ -13,8 +13,9 @@ import { titleize } from '../util';
  *   1  Phase 1: dictionary, numbering, audit, properties, sys_user
  *   2  Phase 2: identity (roles, groups, memberships), ACLs, sessions
  *   3  Phase 3: UI layouts (sys_ui_list, sys_ui_form, sys_ui_section), journal entries
+ *   4  Phase 4: server scripting (sys_script business rules, sys_script_include, ACL scripts)
  */
-export const BOOTSTRAP_VERSION = 3;
+export const BOOTSTRAP_VERSION = 4;
 const VERSION_PROPERTY = 'glide.steward.bootstrap_version';
 
 interface BootstrapField {
@@ -219,6 +220,7 @@ export const SYSTEM_TABLES: BootstrapTable[] = [
       { element: 'active', type: 'boolean', defaultValue: 'true' },
       { element: 'admin_overrides', type: 'boolean', defaultValue: 'true' },
       { element: 'condition', type: 'text' },
+      { element: 'script', type: 'script', label: 'Script' },
       { element: 'description', type: 'text' },
     ],
   },
@@ -282,6 +284,49 @@ export const SYSTEM_TABLES: BootstrapTable[] = [
       { element: 'value', type: 'text', display: true },
     ],
     indexes: [['element_id']],
+  },
+  // ----------------------------------------------------------- scripting (v4)
+  {
+    name: 'sys_script',
+    label: 'Business Rule',
+    fields: [
+      { element: 'name', type: 'string', maxLength: 100, mandatory: true, display: true },
+      { element: 'collection', type: 'string', maxLength: 80, mandatory: true, label: 'Table' },
+      {
+        element: 'when',
+        type: 'choice',
+        mandatory: true,
+        defaultValue: 'before',
+        choices: [
+          { value: 'before', label: 'before' },
+          { value: 'after', label: 'after' },
+          { value: 'async', label: 'async' },
+        ],
+      },
+      { element: 'order', type: 'integer', defaultValue: '100' },
+      { element: 'action_insert', type: 'boolean', defaultValue: 'false', label: 'Insert' },
+      { element: 'action_update', type: 'boolean', defaultValue: 'false', label: 'Update' },
+      { element: 'action_delete', type: 'boolean', defaultValue: 'false', label: 'Delete' },
+      { element: 'filter_condition', type: 'text', label: 'Filter condition' },
+      { element: 'condition', type: 'string', maxLength: 255, label: 'Condition' },
+      { element: 'script', type: 'script', mandatory: true },
+      { element: 'active', type: 'boolean', defaultValue: 'true' },
+      { element: 'description', type: 'text' },
+    ],
+    indexes: [['collection']],
+  },
+  {
+    name: 'sys_script_include',
+    label: 'Script Include',
+    fields: [
+      { element: 'name', type: 'string', maxLength: 80, mandatory: true, display: true },
+      { element: 'api_name', type: 'string', maxLength: 160, readOnly: true, label: 'API name' },
+      { element: 'script', type: 'script', mandatory: true },
+      { element: 'active', type: 'boolean', defaultValue: 'true' },
+      { element: 'client_callable', type: 'boolean', defaultValue: 'false', label: 'Client callable' },
+      { element: 'description', type: 'text' },
+    ],
+    unique: [['name']],
   },
 ];
 
@@ -481,6 +526,15 @@ const SEED_STEPS: Array<{ version: number; run(tx: Db): Promise<void> }> = [
       }
     },
   },
+  {
+    version: 4,
+    async run(tx) {
+      for (const [name, elements] of SEED_LIST_LAYOUTS) {
+        const exists = await tx.query(`SELECT 1 FROM "sys_ui_list" WHERE "name" = $1 AND "view" = 'default'`, [name]);
+        if (!exists.rows.length) await insertRow(tx, 'sys_ui_list', { name, view: 'default', elements });
+      }
+    },
+  },
 ];
 
 /** Default list columns for system tables: [table, comma-separated field paths]. */
@@ -500,4 +554,6 @@ const SEED_LIST_LAYOUTS: Array<[string, string]> = [
   ['sys_ui_form', 'name,view,related_lists'],
   ['sys_ui_section', 'form,caption,position,elements'],
   ['sys_journal_field', 'name,element,element_id,value,sys_created_by,sys_created_on'],
+  ['sys_script', 'name,collection,when,order,action_insert,action_update,action_delete,active'],
+  ['sys_script_include', 'name,api_name,client_callable,active,description,sys_updated_on'],
 ];

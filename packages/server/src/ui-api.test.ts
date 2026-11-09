@@ -183,3 +183,61 @@ describe('web UI hosting', () => {
     expect((await app.inject({ method: 'POST', url: '/ticket.do' })).statusCode).toBe(404);
   });
 });
+
+describe('Background Scripts API (/api/steward/script)', () => {
+  const admin = () => ({ authorization: basic('admin', 'admin-pw') });
+  const carol = () => ({ authorization: basic('carol', 'carol-pw') });
+
+  it('requires admin role for both eval and logs', async () => {
+    expect((await app.inject({ method: 'POST', url: '/api/steward/script/eval', payload: { script: '1+1' } })).statusCode).toBe(401);
+    expect((await app.inject({ method: 'POST', url: '/api/steward/script/eval', headers: carol(), payload: { script: '1+1' } })).statusCode).toBe(403);
+    expect((await app.inject({ url: '/api/steward/script/logs', headers: carol() })).statusCode).toBe(403);
+  });
+
+  it('evaluates scripts in the sandbox, returns logs/messages/value, and exposes recent logs', async () => {
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/steward/script/eval',
+      headers: admin(),
+      payload: {
+        script: `
+          var gr = new GlideRecord('ticket');
+          gr.query();
+          gs.info('Count=' + gr.getRowCount());
+          gs.addInfoMessage('Done');
+          gr.getRowCount();
+        `,
+      },
+    });
+    expect(res.statusCode).toBe(200);
+    const out = json(res).result;
+    expect(out.value).toBe(4);
+    expect(out.logs.some((l: { message: string }) => l.message === 'Count=4')).toBe(true);
+    expect(out.messages).toEqual([{ type: 'info', message: 'Done' }]);
+
+    const logsRes = await app.inject({ url: '/api/steward/script/logs', headers: admin() });
+    expect(logsRes.statusCode).toBe(200);
+    expect(json(logsRes).result.some((l: { message: string }) => l.message === 'Count=4')).toBe(true);
+  });
+
+  it('returns 400 on infinite loop timeout and the server remains healthy', async () => {
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/steward/script/eval',
+      headers: admin(),
+      payload: { script: 'while (true) {}', timeout_ms: 60 },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(json(res).error.message).toMatch(/timed out/i);
+
+    const next = await app.inject({
+      method: 'POST',
+      url: '/api/steward/script/eval',
+      headers: admin(),
+      payload: { script: '21 * 2' },
+    });
+    expect(next.statusCode).toBe(200);
+    expect(json(next).result.value).toBe(42);
+  });
+});
+

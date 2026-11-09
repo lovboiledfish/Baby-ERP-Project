@@ -301,6 +301,18 @@ describe('generated UI, end to end', () => {
     await waitFor(() => expect($('legend').textContent).toBe('Details'));
   });
 
+  it('lets an admin run a background script in the UI', async () => {
+    await go('/sys.scripts.do');
+    const editor = await waitFor(() => byLabel<HTMLTextAreaElement>('Script'));
+    await type(
+      editor,
+      `var gr = new GlideRecord('u_vehicle'); gr.query(); gs.info('vehicles=' + gr.getRowCount()); gr.getRowCount();`,
+    );
+    await click(button('Run script'));
+    await waitFor(() => expect($('[data-testid="script-output"]').textContent).toContain('vehicles=1'));
+    expect($('[data-testid="script-return"]').textContent).toBe('Return value: 1');
+  });
+
   it('a user without write access gets a read-only form (field ACL decisions drive the UI)', async () => {
     const sys = systemSession('setup');
     const acl = await inst.engine.insert('sys_security_acl', { name: 'u_vehicle', operation: 'read' }, sys);

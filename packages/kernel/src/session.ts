@@ -18,6 +18,13 @@ export interface Session {
   readonly groups: ReadonlySet<string>;
   /** Platform-internal context that bypasses ACLs. */
   readonly system: boolean;
+  /**
+   * True when this session was derived for server-side GlideRecord inside a sandboxed
+   * script: normal table/field ACLs are bypassed like ServiceNow's GlideRecord, but
+   * platform security boundaries (sys_security_acl, sys_user_session, elevated roles)
+   * are still enforced against `roles`.
+   */
+  readonly script?: boolean;
   /** Set while an admin impersonates this user: the real user behind the session. */
   readonly impersonator?: { readonly userId: string; readonly userName: string };
 }
@@ -27,6 +34,23 @@ const EMPTY: ReadonlySet<string> = Object.freeze(new Set<string>());
 /** A privileged, ACL-bypassing session. `userName` only controls attribution (sys_created_by, audit). */
 export function systemSession(userName = 'system'): Session {
   return Object.freeze({ userName, userId: null, roles: EMPTY, groups: EMPTY, system: true });
+}
+
+/**
+ * Session used by server-side GlideRecord inside sandboxed scripts.
+ * Bypasses normal table/field ACLs (`system: true`), while still enforcing
+ * elevated-role (`security_admin`) and `sys_user_session` guards (`script: true`).
+ */
+export function scriptSession(caller: Session, keepRoles = false): Session {
+  return Object.freeze({
+    userName: caller.userName,
+    userId: caller.userId,
+    roles: keepRoles ? caller.roles : EMPTY,
+    groups: caller.groups,
+    system: true,
+    script: true,
+    impersonator: caller.impersonator,
+  });
 }
 
 export const SYSTEM_SESSION: Session = systemSession();

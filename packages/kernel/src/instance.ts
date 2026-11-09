@@ -8,6 +8,9 @@ import { PgliteDb } from './db/pglite';
 import { MetaApi } from './meta/meta-api';
 import { registerMetadataHooks } from './meta/meta-hooks';
 import { MetaService } from './meta/meta-service';
+import type { ScriptRuntimeOptions } from './script/sandbox';
+import { registerScriptHooks } from './script/script-hooks';
+import { ScriptService } from './script/script-service';
 import { AclService } from './security/acl-service';
 import { AuthService, type AuthOptions } from './security/auth-service';
 import { hashPassword } from './security/password';
@@ -27,6 +30,8 @@ export interface InstanceOptions extends AuthOptions {
    * random password is generated and exposed as `generatedAdminPassword`.
    */
   adminPassword?: string;
+  /** Options for the V8 isolate script runtime (`isolated-vm`). */
+  script?: ScriptRuntimeOptions;
 }
 
 /** One Steward instance = one database + its kernel services. */
@@ -39,6 +44,7 @@ export class Instance {
     readonly meta: MetaService,
     readonly hooks: HookRegistry,
     readonly acl: AclService,
+    readonly scripts: ScriptService,
     readonly engine: DataEngine,
     readonly metaApi: MetaApi,
     readonly auth: AuthService,
@@ -53,12 +59,25 @@ export class Instance {
     await meta.load(db);
     const acl = new AclService(meta);
     await acl.load(db);
+    const scripts = new ScriptService(meta, opts.script);
+    await scripts.load(db);
     const hooks = new HookRegistry();
     registerMetadataHooks(hooks);
     registerSecurityHooks(hooks);
     registerUiHooks(hooks);
-    const engine = new DataEngine(db, meta, hooks, acl);
-    const instance = new Instance(db, meta, hooks, acl, engine, new MetaApi(engine), new AuthService(engine, acl, opts), new UiService(engine));
+    registerScriptHooks(hooks);
+    const engine = new DataEngine(db, meta, hooks, acl, scripts);
+    const instance = new Instance(
+      db,
+      meta,
+      hooks,
+      acl,
+      scripts,
+      engine,
+      new MetaApi(engine),
+      new AuthService(engine, acl, opts),
+      new UiService(engine),
+    );
     await instance.ensureAdminPassword(opts.adminPassword);
     return instance;
   }
@@ -72,8 +91,9 @@ export class Instance {
     return new GlideRecord(this.engine, table, session);
   }
 
-  close(): Promise<void> {
-    return this.db.close();
+  async close(): Promise<void> {
+    await this.scripts.close();
+    await this.db.close();
   }
 
   private async ensureAdminPassword(password: string | undefined): Promise<void> {

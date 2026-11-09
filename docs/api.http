@@ -205,3 +205,47 @@ Content-Type: application/json
 ### Activity stream of a record (journal entries + audited changes, ACL-filtered)
 # GET {{base}}/api/steward/ui/activity/incident/<sys_id>
 # Authorization: Bearer {{token}}
+
+### ------------------------------------------------------------------ Phase 4: Server Scripting
+### Business Rules (sys_script), Script Includes (sys_script_include), scripted ACLs
+### (sys_security_acl.script), and Background Scripts (/api/steward/script/eval).
+
+### Create a reusable Script Include (Class.create)
+POST {{base}}/api/now/table/sys_script_include
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "name": "IncidentHelper",
+  "script": "var IncidentHelper = Class.create(); IncidentHelper.prototype = { initialize: function() {}, tag: function(s) { return '[P1] ' + s; }, type: 'IncidentHelper' };"
+}
+
+### Create a before-insert/update Business Rule on incident
+POST {{base}}/api/now/table/sys_script
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "name": "Tag P1 Incidents",
+  "collection": "incident",
+  "when": "before",
+  "order": 100,
+  "action_insert": true,
+  "action_update": true,
+  "filter_condition": "priority=1",
+  "script": "var h = new IncidentHelper(); if (String(current.short_description).indexOf('[P1] ') !== 0) { current.short_description = h.tag(current.short_description); }"
+}
+
+### Run a background script in the V8 sandbox (admin only)
+POST {{base}}/api/steward/script/eval
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "script": "var gr = new GlideRecord('incident'); gr.addQuery('priority', 1); gr.query(); gs.info('P1 count = ' + gr.getRowCount()); gr.getRowCount();"
+}
+
+### Inspect recent script logs (gs.info / warn / error / debug)
+GET {{base}}/api/steward/script/logs
+Authorization: Bearer {{token}}
+

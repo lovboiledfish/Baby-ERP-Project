@@ -4,6 +4,7 @@ import { api, errorMessage, UNAUTHORIZED_EVENT } from './lib/api';
 import { useLocation } from './lib/hooks';
 import { listUrl, parseRoute, resolveRoute, tableBuilderUrl } from './lib/routes';
 import { ErrorBanner, Link, Spinner } from './components/common';
+import { BackgroundScripts } from './components/BackgroundScripts';
 import { FormView } from './components/FormView';
 import { ListView } from './components/ListView';
 import { Login } from './components/Login';
@@ -79,6 +80,9 @@ export function App() {
       break;
     case 'table_builder':
       page = <TableBuilder key={key} table={route.table} />;
+      break;
+    case 'scripts':
+      page = <BackgroundScripts key={key} />;
       break;
     default:
       page = <div className="banner banner-error">Page not found: {route.path}</div>;

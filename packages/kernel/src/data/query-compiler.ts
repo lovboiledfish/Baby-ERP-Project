@@ -281,8 +281,11 @@ function predicateSql(ctx: Ctx, table: string, alias: string, ast: QueryAst): st
 /** SQL for an access decision on row `alias`: null = no restriction. */
 function decisionSql(ctx: Ctx, table: string, alias: string, d: AccessDecision): string | null {
   if (d === true) return null;
-  if (d === false || d.length === 0) return 'FALSE';
-  const preds = d.map((ast) => predicateSql(ctx, table, alias, ast));
+  if (d === false) return 'FALSE';
+  const asts = Array.isArray(d) ? d : d.sqlConditions;
+  if (asts === null) return null;
+  if (asts.length === 0) return 'FALSE';
+  const preds = asts.map((ast) => predicateSql(ctx, table, alias, ast));
   return preds.length === 1 ? `(${preds[0]})` : `(${preds.map((p) => `(${p})`).join(' OR ')})`;
 }
 

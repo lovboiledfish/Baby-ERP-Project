@@ -5,7 +5,7 @@ The core idea: **everything is a record**. Tables, fields and choices are rows i
 `sys_dictionary`, `sys_choice`), and inserting one of those rows *is* the schema change. Users, roles, groups and
 ACLs are records too (`sys_user*`, `sys_security_acl`), and the data engine enforces them on every access.
 
-Status: **Phase 0 - 3** (foundations, dictionary, data engine, Table API, identity and ACLs, generated UI). See the design doc for the roadmap.
+Status: **Phase 0 - 4** (foundations, dictionary, data engine, Table API, identity and ACLs, generated UI, sandboxed server scripting). See the design doc for the roadmap.
 
 ## Quick start (Windows, portable Node in `.tools/`)
 
@@ -30,14 +30,15 @@ Then open [`docs/api.http`](docs/api.http) in VS Code (REST Client) or any HTTP 
 ```
 packages/
   shared/   encoded-query parser/serializer, zod metadata schemas
-  kernel/   db adapter (PGlite), versioned bootstrap, meta service + hooks + schema compiler,
+  kernel/   db adapter (PGlite + savepoints), versioned bootstrap, meta service + hooks + schema compiler,
             data engine (query compiler, coercion, audit, numbering, journal fields), GlideRecord, Instance,
             security (ACL evaluator, auth/sessions/impersonation, password hashing),
-            ui (layouts, per-record field access, related lists, activity stream)
+            ui (layouts, per-record field access, related lists, activity stream),
+            script (isolated-vm V8 sandbox, Business Rules, Script Includes, scripted ACLs, background scripts)
   server/   Fastify: /api/steward/auth, /api/now/table (Table API), /api/steward/meta (Meta API),
-            /api/steward/ui (UI API), and the built web UI with SPA fallback
+            /api/steward/ui (UI API), /api/steward/script (Script API), and the built web UI with SPA fallback
   web/      React 19 + Vite SPA: login, navigator, lists, condition builder, forms, reference picker,
-            related lists, activity stream, table builder, list/form layout editors
+            related lists, activity stream, table builder, list/form layout editors, Scripts - Background
 docs/
   adr/      architecture decision records
   api.http  manual walkthrough
@@ -69,8 +70,13 @@ docs/
   `journal` fields (`sys_journal_field`) + merged activity stream, table builder, and editable list/form
   layouts (`sys_ui_list`, `sys_ui_form`, `sys_ui_section` with view fallback and inheritance). Per-record
   field ACL decisions drive read-only and hidden fields. See ADR 0005.
+- **Sandboxed server scripting** (`isolated-vm` V8 isolates with CPU, memory, and host-call limits):
+  synchronous in-sandbox `GlideRecord` (system context) and `GlideRecordSecure` (caller ACL context),
+  `gs`, `GlideDateTime`, `Class.create()` + lazy `sys_script_include` loading, Business Rules (`sys_script`:
+  `before`, `after`, `async`, `order`, `filter_condition`, `condition`, `current.setAbortAction(true)`,
+  `setWorkflow(false)`), scripted ACLs (`sys_security_acl.script`, read-only fail-closed), and
+  `Scripts - Background` (`/sys.scripts.do` + `/api/steward/script`). See ADR 0006.
 
 ## Not yet (by design, see roadmap)
 
-Sandboxed scripting, business rules & script ACLs (Phase 4), events/jobs (Phase 5),
-scoped apps + SDK (Phase 6), flows/SLA (Phase 7).
+Events/jobs (Phase 5), scoped apps + SDK (Phase 6), flows/SLA (Phase 7).

@@ -13,7 +13,7 @@ import {
   withOrder,
   type CondField,
 } from './conditions';
-import { formUrl, listUrl, parseRoute, resolveRoute, tableBuilderUrl } from './routes';
+import { formUrl, listUrl, parseRoute, resolveRoute, scriptsUrl, tableBuilderUrl } from './routes';
 import { fromInputValue, InputError, isEmptyInput, toInputValue } from './values';
 import { parseEncodedQuery, stringifyEncodedQuery } from '@steward/shared';
 import { withQuery } from './api';
@@ -42,6 +42,9 @@ describe('routes', () => {
     expect(parseRoute('/incident.do', '?sys_id=abc&sysparm_view=mobile')).toEqual({ kind: 'form', table: 'incident', sysId: 'abc', query: '', view: 'mobile' });
     expect(parseRoute('/incident.do', '')).toMatchObject({ kind: 'form', sysId: '-1' });
     expect(parseRoute('/now/table_builder', '?table=u_x')).toEqual({ kind: 'table_builder', table: 'u_x' });
+    expect(parseRoute('/sys.scripts.do', '')).toEqual({ kind: 'scripts' });
+    expect(parseRoute('/now/scripts', '')).toEqual({ kind: 'scripts' });
+    expect(scriptsUrl()).toBe('/sys.scripts.do');
     expect(parseRoute('/Incident.do', '')).toEqual({ kind: 'not_found', path: '/Incident.do' });
     expect(parseRoute('/../etc.do', '')).toMatchObject({ kind: 'not_found' });
   });

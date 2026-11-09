@@ -2,6 +2,7 @@ import { toStewardError, type Instance } from '@steward/kernel';
 import Fastify, { type FastifyInstance } from 'fastify';
 import { authRoutes } from './routes/auth';
 import { metaRoutes } from './routes/meta';
+import { scriptRoutes } from './routes/script';
 import { tableRoutes } from './routes/table';
 import { uiRoutes } from './routes/ui';
 import { WWW_AUTHENTICATE } from './session';
@@ -41,6 +42,7 @@ export async function buildApp(instance: Instance, opts: AppOptions = {}): Promi
   await app.register(tableRoutes(instance), { prefix: '/api/now/table' });
   await app.register(metaRoutes(instance), { prefix: '/api/steward/meta' });
   await app.register(uiRoutes(instance), { prefix: '/api/steward/ui' });
+  await app.register(scriptRoutes(instance), { prefix: '/api/steward/script' });
   if (opts.webRoot) registerWebUi(app, opts.webRoot);
   return app;
 }
