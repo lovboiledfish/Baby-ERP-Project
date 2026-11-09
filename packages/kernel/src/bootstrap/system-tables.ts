@@ -12,8 +12,9 @@ import { titleize } from '../util';
  *
  *   1  Phase 1: dictionary, numbering, audit, properties, sys_user
  *   2  Phase 2: identity (roles, groups, memberships), ACLs, sessions
+ *   3  Phase 3: UI layouts (sys_ui_list, sys_ui_form, sys_ui_section), journal entries
  */
-export const BOOTSTRAP_VERSION = 2;
+export const BOOTSTRAP_VERSION = 3;
 const VERSION_PROPERTY = 'glide.steward.bootstrap_version';
 
 interface BootstrapField {
@@ -36,6 +37,8 @@ interface BootstrapTable {
   audit?: boolean;
   fields: BootstrapField[];
   unique?: string[][];
+  /** Plain indexes (reference columns are indexed automatically). */
+  indexes?: string[][];
 }
 
 const ref = (element: string, reference: string, extra: Partial<BootstrapField> = {}): BootstrapField => ({
@@ -237,6 +240,49 @@ export const SYSTEM_TABLES: BootstrapTable[] = [
     ],
     unique: [['token_hash']],
   },
+  // ------------------------------------------------------------- UI + journal (v3)
+  {
+    name: 'sys_ui_list',
+    label: 'List Layout',
+    fields: [
+      { element: 'name', type: 'string', maxLength: 80, mandatory: true, display: true, label: 'Table' },
+      { element: 'view', type: 'string', maxLength: 40, mandatory: true, defaultValue: 'default' },
+      { element: 'elements', type: 'text', mandatory: true, label: 'Columns' },
+    ],
+    unique: [['name', 'view']],
+  },
+  {
+    name: 'sys_ui_form',
+    label: 'Form Layout',
+    fields: [
+      { element: 'name', type: 'string', maxLength: 80, mandatory: true, display: true, label: 'Table' },
+      { element: 'view', type: 'string', maxLength: 40, mandatory: true, defaultValue: 'default' },
+      { element: 'related_lists', type: 'text', label: 'Related lists' },
+    ],
+    unique: [['name', 'view']],
+  },
+  {
+    name: 'sys_ui_section',
+    label: 'Form Section',
+    fields: [
+      ref('form', 'sys_ui_form'),
+      { element: 'caption', type: 'string', maxLength: 80, display: true },
+      { element: 'position', type: 'integer', defaultValue: '0' },
+      { element: 'elements', type: 'text', label: 'Fields' },
+    ],
+  },
+  {
+    name: 'sys_journal_field',
+    label: 'Journal Entry',
+    audit: false,
+    fields: [
+      { element: 'name', type: 'string', maxLength: 80, mandatory: true, label: 'Table' },
+      { element: 'element', type: 'string', maxLength: 80, mandatory: true, label: 'Field' },
+      { element: 'element_id', type: 'guid', mandatory: true, label: 'Record' },
+      { element: 'value', type: 'text', display: true },
+    ],
+    indexes: [['element_id']],
+  },
 ];
 
 export async function isBootstrapped(db: Db): Promise<boolean> {
@@ -293,6 +339,9 @@ async function ensureSchema(tx: Db): Promise<void> {
     if (created) {
       for (const cols of t.unique ?? []) {
         for (const sql of planDDL({ kind: 'add_unique', physical: t.name, columns: cols })) await tx.exec(sql);
+      }
+      for (const cols of t.indexes ?? []) {
+        for (const sql of planDDL({ kind: 'add_index', physical: t.name, columns: cols })) await tx.exec(sql);
       }
     }
   }
@@ -423,4 +472,32 @@ const SEED_STEPS: Array<{ version: number; run(tx: Db): Promise<void> }> = [
       }
     },
   },
+  {
+    version: 3,
+    async run(tx) {
+      for (const [name, elements] of SEED_LIST_LAYOUTS) {
+        const exists = await tx.query(`SELECT 1 FROM "sys_ui_list" WHERE "name" = $1 AND "view" = 'default'`, [name]);
+        if (!exists.rows.length) await insertRow(tx, 'sys_ui_list', { name, view: 'default', elements });
+      }
+    },
+  },
+];
+
+/** Default list columns for system tables: [table, comma-separated field paths]. */
+const SEED_LIST_LAYOUTS: Array<[string, string]> = [
+  ['sys_db_object', 'name,label,super_class,number_prefix,is_extendable,sys_updated_on'],
+  ['sys_dictionary', 'name,element,column_label,internal_type,reference,mandatory,active'],
+  ['sys_choice', 'name,element,value,label,sequence,inactive'],
+  ['sys_user', 'user_name,name,email,active,locked_out'],
+  ['sys_user_role', 'name,description,elevated_privilege'],
+  ['sys_user_group', 'name,manager,email,active'],
+  ['sys_user_grmember', 'user,group'],
+  ['sys_user_has_role', 'user,role'],
+  ['sys_group_has_role', 'group,role'],
+  ['sys_security_acl', 'name,operation,condition,admin_overrides,active'],
+  ['sys_audit', 'tablename,documentkey,fieldname,oldvalue,newvalue,user,sys_created_on'],
+  ['sys_ui_list', 'name,view,elements'],
+  ['sys_ui_form', 'name,view,related_lists'],
+  ['sys_ui_section', 'form,caption,position,elements'],
+  ['sys_journal_field', 'name,element,element_id,value,sys_created_by,sys_created_on'],
 ];

@@ -1,6 +1,6 @@
 import { ValidationError, type Instance, type Session } from '@steward/kernel';
 import type { FastifyPluginAsync } from 'fastify';
-import { authenticate, bearerToken, sessionFor } from '../session';
+import { authenticate, bearerToken, clearSessionCookie, sessionCookie, sessionFor } from '../session';
 
 function stringField(body: unknown, key: string): string {
   const v = typeof body === 'object' && body !== null ? (body as Record<string, unknown>)[key] : undefined;
@@ -21,8 +21,17 @@ export function describeSession(s: Session) {
 /** /api/steward/auth: login, logout, whoami, impersonation. */
 export function authRoutes(instance: Instance): FastifyPluginAsync {
   return async (app) => {
-    app.post('/login', async (req) => {
+    /**
+     * Body: { user_name, password, session?: "cookie" }. With session=cookie (the web UI)
+     * the token is set as an HttpOnly cookie and not returned in the body.
+     */
+    app.post('/login', async (req, reply) => {
       const { token, expires, session } = await instance.auth.login(stringField(req.body, 'user_name'), stringField(req.body, 'password'));
+      const cookie = typeof req.body === 'object' && req.body !== null && (req.body as Record<string, unknown>).session === 'cookie';
+      if (cookie) {
+        reply.header('Set-Cookie', sessionCookie(req, token, expires));
+        return { result: { token_type: 'Cookie', expires, user: describeSession(session) } };
+      }
       return { result: { token, token_type: 'Bearer', expires, user: describeSession(session) } };
     });
 
@@ -33,7 +42,7 @@ export function authRoutes(instance: Instance): FastifyPluginAsync {
 
       secured.post('/logout', async (req, reply) => {
         await instance.auth.logout(bearerToken(req));
-        return reply.status(204).send();
+        return reply.header('Set-Cookie', clearSessionCookie(req)).status(204).send();
       });
 
       secured.post('/impersonate', async (req) => {

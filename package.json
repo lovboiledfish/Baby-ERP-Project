@@ -9,8 +9,10 @@
   ],
   "scripts": {
     "dev": "npm run dev -w @steward/server",
+    "dev:web": "npm run dev -w @steward/web",
+    "build": "npm run build -w @steward/web",
     "start": "npm run start -w @steward/server",
-    "typecheck": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json && tsc -p packages/web/tsconfig.json",
     "test": "vitest run",
     "test:watch": "vitest"
   },

@@ -171,3 +171,37 @@ Authorization: Bearer {{token}}
 ### 12. Log out
 POST {{base}}/api/steward/auth/logout
 Authorization: Bearer {{token}}
+
+### ------------------------------------------------------------------ Phase 3: UI API
+### The web UI (http://127.0.0.1:3000/now/nav after `npm run build`) uses these endpoints
+### with an HttpOnly cookie session; with a bearer token they work the same way.
+
+### Navigator: tables the caller may read
+GET {{base}}/api/steward/ui/nav
+Authorization: Bearer {{token}}
+
+### List layout (sys_ui_list, inherited from parent tables, or generated from the dictionary)
+GET {{base}}/api/steward/ui/list/incident?sysparm_view=default
+Authorization: Bearer {{token}}
+
+### Form layout for a new record (defaults + create access per field)
+GET {{base}}/api/steward/ui/form/incident?sys_id=-1
+Authorization: Bearer {{token}}
+
+### Save a list layout (columns may dot-walk)
+POST {{base}}/api/now/table/sys_ui_list
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{ "name": "incident", "view": "default", "elements": "number,short_description,caller.name,priority" }
+
+### Journal field: add one, then write to it (each value becomes a sys_journal_field entry)
+POST {{base}}/api/steward/meta/tables/task/fields
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{ "element": "comments", "type": "journal" }
+
+### Activity stream of a record (journal entries + audited changes, ACL-filtered)
+# GET {{base}}/api/steward/ui/activity/incident/<sys_id>
+# Authorization: Bearer {{token}}

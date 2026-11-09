@@ -18,6 +18,7 @@ export function coerceValue(field: FieldMeta, raw: unknown): unknown {
     case 'text':
     case 'script':
     case 'password':
+    case 'journal':
     case 'choice':
     case 'sys_class_name': {
       if (typeof raw === 'object') throw new ValidationError(`${where(field)} must be a string`);

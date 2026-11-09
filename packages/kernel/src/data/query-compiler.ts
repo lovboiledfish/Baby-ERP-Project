@@ -125,7 +125,7 @@ class JoinPlanner {
   }
 }
 
-const TEXTY = new Set(['string', 'text', 'script', 'choice', 'sys_class_name']);
+const TEXTY = new Set(['string', 'text', 'script', 'choice', 'sys_class_name', 'journal']);
 const isTexty = (f: FieldMeta) => TEXTY.has(f.type);
 const isUuidField = (f: FieldMeta) => f.type === 'reference' || f.type === 'guid';
 

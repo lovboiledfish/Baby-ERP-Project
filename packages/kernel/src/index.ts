@@ -25,3 +25,16 @@ export {
   toStewardError,
 } from './errors';
 export { SYSTEM_SESSION, systemSession, type Session } from './session';
+export {
+  UiService,
+  type ActivityEntry,
+  type FormAccess,
+  type FormLayout,
+  type FormSection,
+  type ListLayout,
+  type RelatedList,
+  type UiColumn,
+  type UiField,
+  type UiTable,
+} from './ui/ui-service';
+export { parseElements, parseRelated, resolvePath } from './ui/layout';

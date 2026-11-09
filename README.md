@@ -5,7 +5,7 @@ The core idea: **everything is a record**. Tables, fields and choices are rows i
 `sys_dictionary`, `sys_choice`), and inserting one of those rows *is* the schema change. Users, roles, groups and
 ACLs are records too (`sys_user*`, `sys_security_acl`), and the data engine enforces them on every access.
 
-Status: **Phase 0 + 1 + 2** (foundations, dictionary, data engine, Table API, identity and ACLs). See the design doc for the roadmap.
+Status: **Phase 0 - 3** (foundations, dictionary, data engine, Table API, identity and ACLs, generated UI). See the design doc for the roadmap.
 
 ## Quick start (Windows, portable Node in `.tools/`)
 
@@ -14,13 +14,16 @@ $env:Path = "$PWD\.tools\node;$env:Path"   # or use a system-wide Node >= 22
 npm.cmd install
 npm.cmd run typecheck
 npm.cmd test
-npm.cmd run dev                              # http://127.0.0.1:3000, data in .data/instance
+npm.cmd run build                            # builds the web UI into packages/web/dist
+npm.cmd run dev                              # http://127.0.0.1:3000/now/nav, data in .data/instance
 ```
 
 Environment: `PORT` (3000), `HOST` (127.0.0.1), `STEWARD_DATA_DIR` (`.data/instance`, or `memory`),
-`STEWARD_ADMIN_PASSWORD` (password for `admin` while it has none; otherwise one is generated and printed once at boot).
+`STEWARD_ADMIN_PASSWORD` (password for `admin` while it has none; otherwise one is generated and printed once at boot),
+`STEWARD_WEB_ROOT` (serve a different web build; by default `packages/web/dist` is served when it exists).
 
-Then open [`docs/api.http`](docs/api.http) in VS Code (REST Client) or any HTTP client.
+For UI development, run `npm.cmd run dev` and `npm.cmd run dev:web` (Vite on http://127.0.0.1:5173, proxying `/api`).
+Then open [`docs/api.http`](docs/api.http) in VS Code (REST Client) or any HTTP client for the APIs.
 
 ## Layout
 
@@ -28,9 +31,13 @@ Then open [`docs/api.http`](docs/api.http) in VS Code (REST Client) or any HTTP 
 packages/
   shared/   encoded-query parser/serializer, zod metadata schemas
   kernel/   db adapter (PGlite), versioned bootstrap, meta service + hooks + schema compiler,
-            data engine (query compiler, coercion, audit, numbering), GlideRecord, Instance,
-            security (ACL evaluator, auth/sessions/impersonation, password hashing)
-  server/   Fastify: /api/steward/auth, /api/now/table (Table API), /api/steward/meta (Meta API)
+            data engine (query compiler, coercion, audit, numbering, journal fields), GlideRecord, Instance,
+            security (ACL evaluator, auth/sessions/impersonation, password hashing),
+            ui (layouts, per-record field access, related lists, activity stream)
+  server/   Fastify: /api/steward/auth, /api/now/table (Table API), /api/steward/meta (Meta API),
+            /api/steward/ui (UI API), and the built web UI with SPA fallback
+  web/      React 19 + Vite SPA: login, navigator, lists, condition builder, forms, reference picker,
+            related lists, activity stream, table builder, list/form layout editors
 docs/
   adr/      architecture decision records
   api.http  manual walkthrough
@@ -56,8 +63,14 @@ docs/
   encoded-query condition (with `javascript:gs.getUserID()` / `getMyGroups()`), most-specific-level resolution,
   admin overrides, elevated `security_admin`. Enforced **inside the data engine** and compiled to SQL: row predicates,
   ACL-filtered dot-walk joins, per-field omission/masking, safe counts/paging. See ADR 0004.
+- **Generated UI** (`@steward/web` + `/api/steward/ui`): login (HttpOnly cookie + CSRF header), navigator,
+  lists with sorting, paging, breadcrumbs and a condition builder (`^`, `^OR`, `^NQ`), forms with type-ahead
+  reference pickers, related lists (incoming references and `table.field=parent_field` relationships),
+  `journal` fields (`sys_journal_field`) + merged activity stream, table builder, and editable list/form
+  layouts (`sys_ui_list`, `sys_ui_form`, `sys_ui_section` with view fallback and inheritance). Per-record
+  field ACL decisions drive read-only and hidden fields. See ADR 0005.
 
 ## Not yet (by design, see roadmap)
 
-UI (Phase 3), sandboxed scripting, business rules & script ACLs (Phase 4), events/jobs (Phase 5),
+Sandboxed scripting, business rules & script ACLs (Phase 4), events/jobs (Phase 5),
 scoped apps + SDK (Phase 6), flows/SLA (Phase 7).

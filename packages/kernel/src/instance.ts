@@ -13,6 +13,8 @@ import { AuthService, type AuthOptions } from './security/auth-service';
 import { hashPassword } from './security/password';
 import { registerSecurityHooks } from './security/security-hooks';
 import { SYSTEM_SESSION, type Session } from './session';
+import { registerUiHooks } from './ui/ui-hooks';
+import { UiService } from './ui/ui-service';
 
 export interface InstanceOptions extends AuthOptions {
   /** PGlite data directory. Omit for an in-memory instance. */
@@ -40,6 +42,7 @@ export class Instance {
     readonly engine: DataEngine,
     readonly metaApi: MetaApi,
     readonly auth: AuthService,
+    readonly ui: UiService,
   ) {}
 
   static async create(opts: InstanceOptions = {}): Promise<Instance> {
@@ -53,8 +56,9 @@ export class Instance {
     const hooks = new HookRegistry();
     registerMetadataHooks(hooks);
     registerSecurityHooks(hooks);
+    registerUiHooks(hooks);
     const engine = new DataEngine(db, meta, hooks, acl);
-    const instance = new Instance(db, meta, hooks, acl, engine, new MetaApi(engine), new AuthService(engine, acl, opts));
+    const instance = new Instance(db, meta, hooks, acl, engine, new MetaApi(engine), new AuthService(engine, acl, opts), new UiService(engine));
     await instance.ensureAdminPassword(opts.adminPassword);
     return instance;
   }

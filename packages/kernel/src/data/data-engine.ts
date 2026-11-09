@@ -8,7 +8,7 @@ import type { AclService } from '../security/acl-service';
 import { resolveDynamic } from '../security/dynamic';
 import { hashPassword, isPasswordHash } from '../security/password';
 import type { AccessDecision, AclOperation } from '../security/types';
-import { SYSTEM_SESSION, type Session } from '../session';
+import { SYSTEM_SESSION, systemSession, type Session } from '../session';
 import { isUuid, quoteIdent } from '../util';
 import { writeAudit, type AuditEntry } from './audit';
 import { coerceValue, sameValue, toAuditString, toDbParam } from './coerce';
@@ -193,6 +193,7 @@ export class DataEngine {
     this.recoerce(table, current, {});
     await this.hashPasswords(table, current);
     this.checkMandatory(table, current, true);
+    const journal = this.takeJournal(table, current);
 
     const now = new Date().toISOString();
     const row: Array<[string, unknown]> = [
@@ -217,6 +218,7 @@ export class DataEngine {
     for (const check of rowChecks) {
       if (!(await this.matches(table, sysId, check.decision))) throw new ForbiddenError(`Not authorized to ${check.what}`);
     }
+    await this.writeJournal(table, sysId, journal, session);
 
     const record = (await this.get(table, sysId))!;
     if (t.audit) {
@@ -268,9 +270,10 @@ export class DataEngine {
     this.recoerce(table, current, previous);
     await this.hashPasswords(table, current);
     this.checkMandatory(table, current, false);
+    const journal = this.takeJournal(table, current);
 
     const changed = [...fields.values()].filter((f) => !f.system && !sameValue(f, previous[f.element], current[f.element]));
-    if (changed.length === 0) return this.visibleRecord(table, sysId, previous, session);
+    if (changed.length === 0 && journal.length === 0) return this.visibleRecord(table, sysId, previous, session);
 
     const params: unknown[] = [];
     const sets = changed.map((f) => {
@@ -279,12 +282,13 @@ export class DataEngine {
     });
     params.push(new Date().toISOString(), session.userName, sysId, previous.sys_mod_count);
     const n = params.length;
+    sets.push(`"sys_updated_on" = $${n - 3}`, `"sys_updated_by" = $${n - 2}`, `"sys_mod_count" = "sys_mod_count" + 1`);
     const res = await this.db.query(
-      `UPDATE ${quoteIdent(t.physical)} SET ${sets.join(', ')}, "sys_updated_on" = $${n - 3}, "sys_updated_by" = $${n - 2}, ` +
-        `"sys_mod_count" = "sys_mod_count" + 1 WHERE "sys_id" = $${n - 1} AND "sys_mod_count" = $${n}`,
+      `UPDATE ${quoteIdent(t.physical)} SET ${sets.join(', ')} WHERE "sys_id" = $${n - 1} AND "sys_mod_count" = $${n}`,
       params,
     );
     if (res.affectedRows === 0) throw new ConflictError(`Record ${table}:${sysId} was modified by someone else`);
+    await this.writeJournal(String(previous.sys_class_name ?? table), sysId, journal, session);
 
     const record = (await this.get(table, sysId))!;
     if (t.audit) {
@@ -332,8 +336,8 @@ export class DataEngine {
     return access;
   }
 
-  /** Does record `sysId` satisfy an access decision? */
-  private async matches(table: string, sysId: string, decision: AccessDecision): Promise<boolean> {
+  /** Does record `sysId` satisfy an access decision? (Conditions are evaluated in SQL against the stored row.) */
+  async matches(table: string, sysId: string, decision: AccessDecision): Promise<boolean> {
     if (decision === true) return true;
     if (decision === false) return false;
     const check = compileRowCheck(this.meta, table, sysId, decision);
@@ -385,11 +389,37 @@ export class DataEngine {
 
   private checkMandatory(table: string, current: RecordValues, isInsert: boolean): void {
     const missing = [...this.meta.fields(table).values()].filter(
-      // Password values are never loaded back, so "mandatory" can only be enforced on insert.
-      (f) => !f.system && f.mandatory && current[f.element] == null && (isInsert || f.type !== 'password'),
+      // Password values are never loaded back and journal fields are always empty when
+      // read, so "mandatory" can only be enforced on insert for them.
+      (f) =>
+        !f.system &&
+        f.mandatory &&
+        (current[f.element] == null || (f.type === 'journal' && String(current[f.element]).trim() === '')) &&
+        (isInsert || (f.type !== 'password' && f.type !== 'journal')),
     );
     if (missing.length) {
       throw new ValidationError(`Mandatory fields are missing: ${missing.map((f) => f.element).join(', ')}`);
+    }
+  }
+
+  /**
+   * Remove journal values from `current`: journal fields (work notes, comments) are
+   * never stored in their column; each non-blank value becomes a sys_journal_field entry.
+   */
+  private takeJournal(table: string, current: RecordValues): Array<{ element: string; value: string }> {
+    const entries: Array<{ element: string; value: string }> = [];
+    for (const f of this.meta.fields(table).values()) {
+      if (f.type !== 'journal' || !(f.element in current)) continue;
+      const v = current[f.element];
+      current[f.element] = null;
+      if (typeof v === 'string' && v.trim() !== '') entries.push({ element: f.element, value: v });
+    }
+    return entries;
+  }
+
+  private async writeJournal(className: string, sysId: string, entries: Array<{ element: string; value: string }>, session: Session): Promise<void> {
+    for (const e of entries) {
+      await this.doInsert('sys_journal_field', { name: className, element: e.element, element_id: sysId, value: e.value }, systemSession(session.userName));
     }
   }
 

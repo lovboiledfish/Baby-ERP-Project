@@ -3,10 +3,14 @@ import Fastify, { type FastifyInstance } from 'fastify';
 import { authRoutes } from './routes/auth';
 import { metaRoutes } from './routes/meta';
 import { tableRoutes } from './routes/table';
+import { uiRoutes } from './routes/ui';
 import { WWW_AUTHENTICATE } from './session';
+import { registerWebUi } from './web-ui';
 
 export interface AppOptions {
   logger?: boolean;
+  /** Directory of the built web UI (packages/web/dist). Omit to serve the API only. */
+  webRoot?: string;
 }
 
 export async function buildApp(instance: Instance, opts: AppOptions = {}): Promise<FastifyInstance> {
@@ -36,5 +40,7 @@ export async function buildApp(instance: Instance, opts: AppOptions = {}): Promi
   await app.register(authRoutes(instance), { prefix: '/api/steward/auth' });
   await app.register(tableRoutes(instance), { prefix: '/api/now/table' });
   await app.register(metaRoutes(instance), { prefix: '/api/steward/meta' });
+  await app.register(uiRoutes(instance), { prefix: '/api/steward/ui' });
+  if (opts.webRoot) registerWebUi(app, opts.webRoot);
   return app;
 }

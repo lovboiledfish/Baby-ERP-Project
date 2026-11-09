@@ -11,13 +11,15 @@ import { quoteIdent, shortHash } from '../util';
 export type DictionaryChange =
   | { kind: 'add_table'; table: string; superClass?: string | null }
   | { kind: 'add_field'; physical: string; column: string; type: FieldType }
-  | { kind: 'add_unique'; physical: string; columns: string[] };
+  | { kind: 'add_unique'; physical: string; columns: string[] }
+  | { kind: 'add_index'; physical: string; columns: string[] };
 
 const PG_TYPES: Record<FieldType, string> = {
   string: 'text',
   text: 'text',
   script: 'text',
   password: 'text',
+  journal: 'text',
   choice: 'text',
   sys_class_name: 'text',
   integer: 'integer',
@@ -72,6 +74,10 @@ export function planDDL(change: DictionaryChange): string[] {
         `CREATE UNIQUE INDEX ${quoteIdent(indexName(change.physical, change.columns, 'uniq'))} ON ${t} ` +
           `(${change.columns.map(quoteIdent).join(', ')})`,
       ];
+    }
+    case 'add_index': {
+      const t = quoteIdent(change.physical);
+      return [`CREATE INDEX ${quoteIdent(indexName(change.physical, change.columns, 'idx'))} ON ${t} (${change.columns.map(quoteIdent).join(', ')})`];
     }
   }
 }
