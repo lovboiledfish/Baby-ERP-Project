@@ -10,7 +10,8 @@ export function Nav() {
   const { custom, system } = useMemo(() => {
     const f = filter.trim().toLowerCase();
     const visible = tables.filter((t) => !f || t.name.includes(f) || t.label.toLowerCase().includes(f));
-    return { custom: visible.filter((t) => !t.name.startsWith('sys_')), system: visible.filter((t) => t.name.startsWith('sys_')) };
+    const isSys = (name: string) => name.startsWith('sys_') || name.startsWith('sysevent_');
+    return { custom: visible.filter((t) => !isSys(t.name)), system: visible.filter((t) => isSys(t.name)) };
   }, [tables, filter]);
 
   const item = (t: { name: string; label: string }) => (
@@ -42,6 +43,21 @@ export function Nav() {
             </li>
             <li>
               <Link href={listUrl('sys_script_include')}>Script Includes</Link>
+            </li>
+            <li>
+              <Link href={listUrl('sys_script_client')}>Client Scripts</Link>
+            </li>
+            <li>
+              <Link href={listUrl('sys_ui_policy')}>UI Policies</Link>
+            </li>
+            <li>
+              <Link href={listUrl('sysevent_email_action')}>Email Notifications</Link>
+            </li>
+            <li>
+              <Link href={listUrl('sysevent_script_action')}>Script Actions</Link>
+            </li>
+            <li>
+              <Link href={listUrl('sys_trigger')}>Scheduled Jobs</Link>
             </li>
             <li>
               <Link href={scriptsUrl()}>Scripts - Background</Link>

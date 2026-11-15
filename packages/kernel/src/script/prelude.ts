@@ -139,6 +139,23 @@ export const SANDBOX_PRELUDE = `
     now: () => new Date().toISOString().slice(0, 10),
     nowDateTime: () => new Date().toISOString(),
     generateGUID: () => String(call('gs:uuid', {})),
+    eventQueue: (name, record, parm1 = '', parm2 = '') => {
+      let table = null;
+      let instance = null;
+      if (record && typeof record === 'object') {
+        if (typeof record.getTableName === 'function') table = record.getTableName();
+        else if (typeof record.sys_class_name === 'string') table = record.sys_class_name;
+        if (typeof record.getUniqueValue === 'function') instance = record.getUniqueValue();
+        else if (typeof record.sys_id === 'string') instance = record.sys_id;
+      }
+      return call('gs:eventQueue', {
+        name: String(name ?? ''),
+        table: table ? String(table) : null,
+        instance: instance ? String(instance) : null,
+        parm1: parm1 === null || parm1 === undefined ? '' : String(parm1),
+        parm2: parm2 === null || parm2 === undefined ? '' : String(parm2),
+      });
+    },
   });
   globalThis.gs = gs;
 
@@ -505,6 +522,7 @@ export const SANDBOX_PRELUDE = `
   }
   globalThis.current = currentRecord;
   globalThis.previous = previousRecord;
+  globalThis.event = init.event ? Object.freeze({ ...init.event }) : null;
 
   // Internal state reader used by the host right after script completion.
   Object.defineProperty(globalThis, '__steward_extract', {

@@ -12,7 +12,12 @@ const host = process.env.HOST ?? '127.0.0.1';
 const builtWeb = fileURLToPath(new URL('../../web/dist', import.meta.url));
 const webRoot = process.env.STEWARD_WEB_ROOT ? path.resolve(baseDir, process.env.STEWARD_WEB_ROOT) : existsSync(path.join(builtWeb, 'index.html')) ? builtWeb : undefined;
 
-const instance = await Instance.create({ dataDir, adminPassword: process.env.STEWARD_ADMIN_PASSWORD || undefined });
+const instance = await Instance.create({
+  dataDir,
+  adminPassword: process.env.STEWARD_ADMIN_PASSWORD || undefined,
+  events: { emailWebhookUrl: process.env.STEWARD_EMAIL_WEBHOOK_URL || undefined },
+});
+instance.events.startWorker(instance.engine);
 const app = await buildApp(instance, { logger: true, webRoot });
 
 const shutdown = async (signal: string) => {

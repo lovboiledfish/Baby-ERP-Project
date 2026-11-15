@@ -1,3 +1,4 @@
+import type { UiField } from '@steward/kernel';
 import { describe, expect, it } from 'vitest';
 import {
   andQueries,
@@ -14,6 +15,15 @@ import {
   type CondField,
 } from './conditions';
 import { formUrl, listUrl, parseRoute, resolveRoute, scriptsUrl, tableBuilderUrl } from './routes';
+import {
+  applyUiPolicies,
+  buildInitialFieldStates,
+  matchesFormValues,
+  runOnChangeScripts,
+  runOnLoadScripts,
+  runOnSubmitScripts,
+  type FormClientState,
+} from './g-form';
 import { fromInputValue, InputError, isEmptyInput, toInputValue } from './values';
 import { parseEncodedQuery, stringifyEncodedQuery } from '@steward/shared';
 import { withQuery } from './api';
@@ -158,3 +168,121 @@ describe('table builder specs', () => {
     expect(fieldSpec({ ...base, element: 's', type: 'choice', choices: 'a=A' })).toEqual({ element: 's', type: 'choice', choices: [{ value: 'a', label: 'A' }] });
   });
 });
+
+describe('g_form, Client Scripts, and UI Policies', () => {
+  const uiFields: UiField[] = [
+    { element: 'status', column: 'status', definedOn: 'u_vehicle', label: 'Status', type: 'choice', mandatory: false, readOnly: false, system: false, display: false, maxLength: null, defaultValue: 'new', reference: null, referenceDisplayField: null, choices: [{ value: 'new', label: 'New' }, { value: 'used', label: 'Used' }] },
+    { element: 'notes', column: 'notes', definedOn: 'u_vehicle', label: 'Notes', type: 'string', mandatory: false, readOnly: false, system: false, display: false, maxLength: 100, defaultValue: null, reference: null, referenceDisplayField: null, choices: [] },
+    { element: 'locked', column: 'locked', definedOn: 'u_vehicle', label: 'Locked', type: 'string', mandatory: false, readOnly: true, system: false, display: false, maxLength: 40, defaultValue: null, reference: null, referenceDisplayField: null, choices: [] },
+  ];
+  const byName = new Map(uiFields.map((f) => [f.element, f]));
+
+  it('evaluates UI policy conditions and reverses when false while preserving server ACL readOnly', () => {
+    expect(matchesFormValues('status=used^notesISNOTEMPTY', byName, { status: 'used', notes: 'ok' })).toBe(true);
+    expect(matchesFormValues('status=used^notesISNOTEMPTY', byName, { status: 'used', notes: '' })).toBe(false);
+
+    const canEdit = (f: UiField) => !f.readOnly;
+    const state: FormClientState = {
+      values: { status: 'used', notes: 'hello', locked: 'x' },
+      displays: {},
+      fieldStates: buildInitialFieldStates(uiFields, canEdit),
+      banners: [],
+    };
+    const policies = [
+      {
+        sysId: 'p1',
+        shortDescription: 'Used requires notes',
+        table: 'u_vehicle',
+        conditions: 'status=used',
+        onLoad: true,
+        reverseIfFalse: true,
+        order: 100,
+        actions: [
+          { field: 'notes', mandatory: 'true' as const, visible: 'true' as const, disabled: 'false' as const, cleared: false },
+          { field: 'locked', mandatory: 'ignore' as const, visible: 'ignore' as const, disabled: 'false' as const, cleared: false },
+        ],
+      },
+    ];
+    applyUiPolicies(policies, byName, canEdit, state, true);
+    expect(state.fieldStates.notes!.mandatory).toBe(true);
+    // Server ACL / readOnly cannot be unlocked by a UI policy action with disabled='false'.
+    expect(state.fieldStates.locked!.readOnly).toBe(true);
+
+    state.values.status = 'new';
+    applyUiPolicies(policies, byName, canEdit, state, false);
+    expect(state.fieldStates.notes!.mandatory).toBe(false);
+  });
+
+  it('runs onLoad, onChange, and onSubmit client scripts via g_form', () => {
+    const canEdit = (f: UiField) => !f.readOnly;
+    const state: FormClientState = {
+      values: { status: 'new', notes: '', locked: '' },
+      displays: {},
+      fieldStates: buildInitialFieldStates(uiFields, canEdit),
+      banners: [],
+    };
+    const ctx = {
+      table: 'u_vehicle',
+      sysId: '-1',
+      isNew: true,
+      fields: uiFields,
+      canEdit,
+      uiPolicies: [],
+      clientScripts: [
+        {
+          sysId: 'cs1',
+          name: 'Init banner',
+          table: 'u_vehicle',
+          type: 'onLoad' as const,
+          fieldName: null,
+          order: 100,
+          script: `function onLoad() { g_form.addInfoMessage('Loaded ' + g_form.getTableName()); }`,
+        },
+        {
+          sysId: 'cs2',
+          name: 'Status change',
+          table: 'u_vehicle',
+          type: 'onChange' as const,
+          fieldName: 'status',
+          order: 100,
+          script: `function onChange(control, oldValue, newValue) {
+            if (newValue === 'used') {
+              g_form.setValue('notes', 'Inspect mileage');
+              g_form.showFieldMsg('notes', 'Auto-filled for used vehicle');
+            }
+          }`,
+        },
+        {
+          sysId: 'cs3',
+          name: 'Block bad notes',
+          table: 'u_vehicle',
+          type: 'onSubmit' as const,
+          fieldName: null,
+          order: 100,
+          script: `function onSubmit() {
+            if (g_form.getValue('notes') === 'FORBIDDEN') {
+              g_form.addErrorMessage('Forbidden notes');
+              return false;
+            }
+            return true;
+          }`,
+        },
+      ],
+      state,
+    };
+
+    runOnLoadScripts(ctx);
+    expect(state.banners).toEqual([{ type: 'info', text: 'Loaded u_vehicle' }]);
+
+    state.values.status = 'used';
+    runOnChangeScripts(ctx, 'status', 'new', 'used', false);
+    expect(state.values.notes).toBe('Inspect mileage');
+    expect(state.fieldStates.notes!.messages).toEqual([{ type: 'info', text: 'Auto-filled for used vehicle' }]);
+
+    expect(runOnSubmitScripts(ctx)).toBe(true);
+    state.values.notes = 'FORBIDDEN';
+    expect(runOnSubmitScripts(ctx)).toBe(false);
+    expect(state.banners.some((b) => b.type === 'error' && b.text === 'Forbidden notes')).toBe(true);
+  });
+});
+

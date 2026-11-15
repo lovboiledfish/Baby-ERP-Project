@@ -76,6 +76,35 @@ export interface FormAccess {
   fields: Record<string, { write: boolean }>;
 }
 
+export interface UiClientScript {
+  sysId: string;
+  name: string;
+  table: string;
+  type: 'onLoad' | 'onChange' | 'onSubmit';
+  fieldName: string | null;
+  order: number;
+  script: string;
+}
+
+export interface UiPolicyAction {
+  field: string;
+  mandatory: 'true' | 'false' | 'ignore';
+  visible: 'true' | 'false' | 'ignore';
+  disabled: 'true' | 'false' | 'ignore';
+  cleared: boolean;
+}
+
+export interface UiPolicy {
+  sysId: string;
+  shortDescription: string;
+  table: string;
+  conditions: string;
+  onLoad: boolean;
+  reverseIfFalse: boolean;
+  order: number;
+  actions: UiPolicyAction[];
+}
+
 export interface FormLayout {
   table: UiTable;
   view: string;
@@ -93,6 +122,10 @@ export interface FormLayout {
   isNew: boolean;
   /** Actual class of the record when it differs from the requested table (open it as that class). */
   recordClass: string | null;
+  /** Active client scripts (`sys_script_client`) defined on this table or an ancestor. */
+  clientScripts: UiClientScript[];
+  /** Active UI policies (`sys_ui_policy` + `sys_ui_policy_action`) defined on this table or an ancestor. */
+  uiPolicies: UiPolicy[];
 }
 
 export type ActivityEntry =
@@ -204,6 +237,11 @@ export class UiService {
     if (!sections.length) sections = [{ caption: '', elements: this.defaultFormElements(table).filter((e) => readable.has(e)) }];
 
     const target = isNew ? null : String(sysId);
+    const [access, clientScripts, uiPolicies] = await Promise.all([
+      this.formAccess(table, target, fields, session),
+      this.formClientScripts(table),
+      this.formUiPolicies(table, readable),
+    ]);
     return {
       table: this.uiTable(table),
       view: v,
@@ -214,10 +252,12 @@ export class UiService {
       fields,
       sections,
       relatedLists: isNew ? [] : this.relatedLists(table, form?.related_lists, session),
-      access: await this.formAccess(table, target, fields, session),
+      access,
       record,
       isNew,
       recordClass,
+      clientScripts,
+      uiPolicies,
     };
   }
 
@@ -457,6 +497,100 @@ export class UiService {
       access.fields[f.element] = { write };
     }
     return access;
+  }
+
+  private async formClientScripts(table: string): Promise<UiClientScript[]> {
+    if (!this.meta.hasTable('sys_script_client')) return [];
+    const ancestors = this.meta.ancestors(table).map((t) => t.name);
+    const rows = await this.engine.query('sys_script_client', {
+      query: {
+        groups: [
+          [
+            [{ field: 'table', operator: 'IN', value: ancestors.join(',') }],
+            [{ field: 'active', operator: '=', value: 'true' }],
+          ],
+        ],
+        orderBy: [
+          { field: 'order', desc: false },
+          { field: 'sys_created_on', desc: false },
+        ],
+      },
+    });
+    const out: UiClientScript[] = [];
+    for (const r of rows) {
+      const type = r.type;
+      if (type !== 'onLoad' && type !== 'onChange' && type !== 'onSubmit') continue;
+      if (typeof r.script !== 'string' || !r.script.trim()) continue;
+      out.push({
+        sysId: String(r.sys_id),
+        name: String(r.name ?? ''),
+        table: String(r.table ?? table),
+        type,
+        fieldName: typeof r.field_name === 'string' && r.field_name ? r.field_name : null,
+        order: typeof r.order === 'number' ? r.order : 100,
+        script: r.script,
+      });
+    }
+    return out;
+  }
+
+  private async formUiPolicies(table: string, readable: ReadonlySet<string>): Promise<UiPolicy[]> {
+    if (!this.meta.hasTable('sys_ui_policy') || !this.meta.hasTable('sys_ui_policy_action')) return [];
+    const ancestors = this.meta.ancestors(table).map((t) => t.name);
+    const policyRows = await this.engine.query('sys_ui_policy', {
+      query: {
+        groups: [
+          [
+            [{ field: 'table', operator: 'IN', value: ancestors.join(',') }],
+            [{ field: 'active', operator: '=', value: 'true' }],
+          ],
+        ],
+        orderBy: [
+          { field: 'order', desc: false },
+          { field: 'sys_created_on', desc: false },
+        ],
+      },
+    });
+    if (!policyRows.length) return [];
+
+    const policyIds = policyRows.map((p) => String(p.sys_id));
+    const actionRows = await this.engine.query('sys_ui_policy_action', {
+      query: {
+        groups: [[[{ field: 'ui_policy', operator: 'IN', value: policyIds.join(',') }]]],
+        orderBy: [{ field: 'sys_created_on', desc: false }],
+      },
+    });
+
+    const actionsByPolicy = new Map<string, UiPolicyAction[]>();
+    const toChoice = (v: unknown): 'true' | 'false' | 'ignore' => (v === 'true' || v === 'false' ? v : 'ignore');
+    for (const a of actionRows) {
+      const pid = String(a.ui_policy ?? '');
+      const field = String(a.field ?? '');
+      if (!pid || !readable.has(field)) continue;
+      const list = actionsByPolicy.get(pid) ?? [];
+      list.push({
+        field,
+        mandatory: toChoice(a.mandatory),
+        visible: toChoice(a.visible),
+        disabled: toChoice(a.disabled),
+        cleared: Boolean(a.cleared),
+      });
+      actionsByPolicy.set(pid, list);
+    }
+
+    return policyRows.map((p) => {
+      const sysId = String(p.sys_id);
+      return {
+        sysId,
+        shortDescription: String(p.short_description ?? ''),
+        table: String(p.table ?? table),
+        conditions: typeof p.conditions === 'string' ? p.conditions : '',
+        onLoad: p.on_load !== false,
+        reverseIfFalse: p.reverse_if_false !== false,
+        order: typeof p.order === 'number' ? p.order : 100,
+        actions: actionsByPolicy.get(sysId) ?? [],
+      };
+    });
   }
 
   private async referenceLabels(pairs: ReadonlyArray<readonly [string, string | null]>, session: Session): Promise<Map<string, string>> {

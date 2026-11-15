@@ -81,5 +81,12 @@ export const VIEW_RE = /^[a-z0-9_]{1,40}$/;
 
 /** Built-in relationships that cannot be expressed as a reference (like ServiceNow's sys_relationship). */
 export const BUILTIN_RELATED: Readonly<Record<string, string[]>> = {
-  sys_db_object: ['sys_dictionary.name=name', 'sys_choice.name=name', 'sys_script.collection=name'],
+  sys_db_object: [
+    'sys_dictionary.name=name',
+    'sys_choice.name=name',
+    'sys_script.collection=name',
+    'sysevent_email_action.collection=name',
+    'sys_script_client.table=name',
+    'sys_ui_policy.table=name',
+  ],
 };

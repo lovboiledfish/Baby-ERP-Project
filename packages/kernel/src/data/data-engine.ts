@@ -5,6 +5,7 @@ import { ConflictError, ForbiddenError, NotFoundError, ValidationError, toStewar
 import type { MetaService } from '../meta/meta-service';
 import type { FieldMeta } from '../meta/types';
 import { matchesRecord } from '../script/match-record';
+import type { EventService } from '../events/event-service';
 import type { ScriptService } from '../script/script-service';
 import type { AclService } from '../security/acl-service';
 import { resolveDynamic } from '../security/dynamic';
@@ -90,9 +91,10 @@ export class DataEngine {
   constructor(
     private readonly rootDb: Db,
     readonly meta: MetaService,
-     private readonly hooks: HookRegistry,
+    private readonly hooks: HookRegistry,
     readonly acl: AclService,
     readonly scripts?: ScriptService,
+    readonly events?: EventService,
     private readonly tx?: Db,
     txState?: TxState,
   ) {
@@ -113,6 +115,7 @@ export class DataEngine {
     const metaVersion = this.meta.version;
     const aclVersion = this.acl.version;
     const scriptVersion = this.scripts?.version ?? 0;
+    const eventVersion = this.events?.version ?? 0;
 
     if (this.tx) {
       const asyncLen = this.txState.asyncQueue.length;
@@ -123,6 +126,7 @@ export class DataEngine {
         if (this.meta.version !== metaVersion) await this.meta.load(this.tx);
         if (this.acl.version !== aclVersion) await this.acl.load(this.tx);
         if (this.scripts && this.scripts.version !== scriptVersion) await this.scripts.load(this.tx);
+        if (this.events && this.events.version !== eventVersion) await this.events.load(this.tx);
         throw toStewardError(e) ?? e;
       }
     }
@@ -130,7 +134,7 @@ export class DataEngine {
     const state: TxState = { depth: 0, asyncQueue: [] };
     try {
       const result = await this.rootDb.transaction((tx) =>
-        fn(new DataEngine(this.rootDb, this.meta, this.hooks, this.acl, this.scripts, tx, state)),
+        fn(new DataEngine(this.rootDb, this.meta, this.hooks, this.acl, this.scripts, this.events, tx, state)),
       );
       if (state.asyncQueue.length > 0 && this.scripts) {
         this.scripts.enqueueAsync(state.asyncQueue, this);
@@ -141,6 +145,7 @@ export class DataEngine {
       if (this.meta.version !== metaVersion) await this.meta.load(this.rootDb);
       if (this.acl.version !== aclVersion) await this.acl.load(this.rootDb);
       if (this.scripts && this.scripts.version !== scriptVersion) await this.scripts.load(this.rootDb);
+      if (this.events && this.events.version !== eventVersion) await this.events.load(this.rootDb);
       throw toStewardError(e) ?? e;
     }
   }
@@ -764,6 +769,15 @@ export class DataEngine {
           await this.scripts.runRules(this, 'after', operation, table, current, session, previous);
           const asyncTask = this.scripts.buildAsyncTask(operation, table, current, session);
           if (asyncTask) this.txState.asyncQueue.push(asyncTask);
+        }
+        if (this.events) {
+          if (workflow !== false && table !== 'sys_event' && table !== 'sys_email') {
+            const queued = await this.events.queueRecordNotifications(this, operation, table, current, session, previous);
+            if (queued > 0) this.txState.asyncQueue.push(this.events.buildDrainTask());
+          }
+          if (table === 'sys_event' && operation === 'insert' && current.state === 'ready') {
+            this.txState.asyncQueue.push(this.events.buildDrainTask());
+          }
         }
       }
     } finally {

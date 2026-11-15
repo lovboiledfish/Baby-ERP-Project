@@ -5,6 +5,8 @@ import { GlideRecord } from './data/glide-record';
 import { HookRegistry } from './data/hooks';
 import type { Db } from './db/db';
 import { PgliteDb } from './db/pglite';
+import { registerEventHooks } from './events/event-hooks';
+import { EventService, type EventServiceOptions } from './events/event-service';
 import { MetaApi } from './meta/meta-api';
 import { registerMetadataHooks } from './meta/meta-hooks';
 import { MetaService } from './meta/meta-service';
@@ -32,6 +34,8 @@ export interface InstanceOptions extends AuthOptions {
   adminPassword?: string;
   /** Options for the V8 isolate script runtime (`isolated-vm`). */
   script?: ScriptRuntimeOptions;
+  /** Options for the event outbox, scheduled job worker, and email transport. */
+  events?: EventServiceOptions;
 }
 
 /** One Steward instance = one database + its kernel services. */
@@ -45,6 +49,7 @@ export class Instance {
     readonly hooks: HookRegistry,
     readonly acl: AclService,
     readonly scripts: ScriptService,
+    readonly events: EventService,
     readonly engine: DataEngine,
     readonly metaApi: MetaApi,
     readonly auth: AuthService,
@@ -61,18 +66,22 @@ export class Instance {
     await acl.load(db);
     const scripts = new ScriptService(meta, opts.script);
     await scripts.load(db);
+    const events = new EventService(meta, scripts, opts.events);
+    await events.load(db);
     const hooks = new HookRegistry();
     registerMetadataHooks(hooks);
     registerSecurityHooks(hooks);
     registerUiHooks(hooks);
     registerScriptHooks(hooks);
-    const engine = new DataEngine(db, meta, hooks, acl, scripts);
+    registerEventHooks(hooks);
+    const engine = new DataEngine(db, meta, hooks, acl, scripts, events);
     const instance = new Instance(
       db,
       meta,
       hooks,
       acl,
       scripts,
+      events,
       engine,
       new MetaApi(engine),
       new AuthService(engine, acl, opts),
@@ -91,8 +100,18 @@ export class Instance {
     return new GlideRecord(this.engine, table, session);
   }
 
+  /** Wait for all queued async business rules, events, script actions, and email deliveries to complete. */
+  async flush(): Promise<void> {
+    await this.scripts.flush();
+    await this.events.flush();
+    await this.scripts.flush();
+  }
+
   async close(): Promise<void> {
+    this.events.stopWorker();
+    await this.flush();
     await this.scripts.close();
+    await this.events.close();
     await this.db.close();
   }
 

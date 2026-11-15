@@ -3,6 +3,16 @@ import { useEffect, useState, type FormEvent } from 'react';
 import { useApp } from '../context';
 import { api } from '../lib/api';
 import { prefillFromQuery } from '../lib/conditions';
+import {
+  buildInitialFieldStates,
+  cloneFormClientState,
+  runOnChangeScripts,
+  runOnLoadScripts,
+  runOnSubmitScripts,
+  type FieldUiState,
+  type FormBannerMessage,
+  type FormClientState,
+} from '../lib/g-form';
 import { useAsync } from '../lib/hooks';
 import { formUrl, listUrl, navigate, tableBuilderUrl } from '../lib/routes';
 import { fromInputValue, InputError, isEmptyInput, toInputValue, type InputValue } from '../lib/values';
@@ -32,6 +42,8 @@ export function FormView({ table, sysId, query, view }: Props) {
   const [values, setValues] = useState<Values>({});
   const [initial, setInitial] = useState<Values>({});
   const [displays, setDisplays] = useState<Record<string, string>>({});
+  const [fieldStates, setFieldStates] = useState<Record<string, FieldUiState>>({});
+  const [clientBanners, setClientBanners] = useState<FormBannerMessage[]>([]);
   const [error, setError] = useState<unknown>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -63,20 +75,40 @@ export function FormView({ table, sysId, query, view }: Props) {
         if (field.type === 'reference') pendingRefs.push(field);
       }
     }
-    setValues(v);
-    setInitial(v);
-    setDisplays(d);
+    setInitial({ ...v });
+    const canEditField = (field: UiField) =>
+      (f.isNew ? f.access.canCreate : f.access.canWrite) && f.access.fields[field.element]?.write === true;
+    const state: FormClientState = {
+      values: { ...v },
+      displays: { ...d },
+      fieldStates: buildInitialFieldStates(f.fields, canEditField),
+      banners: [],
+    };
+    runOnLoadScripts({
+      table,
+      sysId,
+      isNew: f.isNew,
+      fields: f.fields,
+      canEdit: canEditField,
+      clientScripts: f.clientScripts ?? [],
+      uiPolicies: f.uiPolicies ?? [],
+      state,
+    });
+    setValues(state.values);
+    setDisplays(state.displays);
+    setFieldStates(state.fieldStates);
+    setClientBanners(state.banners);
     setError(null);
     // Resolve display values of prefilled references.
     for (const field of pendingRefs) {
-      const id = v[field.element];
+      const id = state.values[field.element];
       if (!field.reference || !field.referenceDisplayField || typeof id !== 'string') continue;
       api<Record<string, unknown>>(`/api/now/table/${field.reference}/${id}`, { query: { sysparm_fields: field.referenceDisplayField } }).then(
         ({ data }) => setDisplays((m) => ({ ...m, [field.element]: String(data[field.referenceDisplayField!] ?? id) })),
         () => undefined,
       );
     }
-  }, [f, query]);
+  }, [f, query, table, sysId]);
 
   if (form.error) return <ErrorBanner error={form.error} />;
   if (!f || f.recordClass) return <Spinner />;
@@ -85,24 +117,87 @@ export function FormView({ table, sysId, query, view }: Props) {
   const canEdit = (field: UiField) => (f.isNew ? f.access.canCreate : f.access.canWrite) && f.access.fields[field.element]?.write === true;
   const title = f.isNew ? `New ${f.table.label}` : f.record[f.table.displayField]?.display_value || f.table.label;
 
+  const handleFieldChange = (el: string, value: InputValue, display?: string) => {
+    const oldVal = values[el];
+    const oldStr = oldVal === undefined || oldVal === null ? '' : typeof oldVal === 'boolean' ? (oldVal ? 'true' : 'false') : String(oldVal);
+    const newStr = value === undefined || value === null ? '' : typeof value === 'boolean' ? (value ? 'true' : 'false') : String(value);
+
+    const state = cloneFormClientState({
+      values,
+      displays,
+      fieldStates,
+      banners: clientBanners,
+    });
+    state.values[el] = value;
+    if (display !== undefined) state.displays[el] = display;
+    runOnChangeScripts(
+      {
+        table,
+        sysId,
+        isNew: f.isNew,
+        fields: f.fields,
+        canEdit,
+        clientScripts: f.clientScripts ?? [],
+        uiPolicies: f.uiPolicies ?? [],
+        state,
+      },
+      el,
+      oldStr,
+      newStr,
+      false,
+    );
+    setValues(state.values);
+    setDisplays(state.displays);
+    setFieldStates(state.fieldStates);
+    setClientBanners(state.banners);
+  };
+
   const save = async (e: FormEvent) => {
     e.preventDefault();
     setError(null);
     setMessage(null);
+
+    const submitState = cloneFormClientState({
+      values,
+      displays,
+      fieldStates,
+      banners: clientBanners,
+    });
+    const ok = runOnSubmitScripts({
+      table,
+      sysId,
+      isNew: f.isNew,
+      fields: f.fields,
+      canEdit,
+      clientScripts: f.clientScripts ?? [],
+      uiPolicies: f.uiPolicies ?? [],
+      state: submitState,
+    });
+    setValues(submitState.values);
+    setDisplays(submitState.displays);
+    setFieldStates(submitState.fieldStates);
+    setClientBanners(submitState.banners);
+    if (!ok) return;
+
     const body: Record<string, unknown> = {};
     const problems: string[] = [];
     for (const field of f.fields) {
       if (!canEdit(field)) continue;
-      const input = values[field.element];
+      const fs = submitState.fieldStates[field.element];
+      const isVisible = fs ? fs.visible : true;
+      const isMandatory = fs ? fs.mandatory : field.mandatory;
+      const isReadOnly = fs ? fs.readOnly : !canEdit(field);
+      const input = submitState.values[field.element];
       const writeOnly = field.type === 'password' || field.type === 'journal';
-      if (field.mandatory && isEmptyInput(input) && (f.isNew || !writeOnly)) {
-        problems.push(`${field.label} is mandatory`);
+      const skipUnchangedPassword = !f.isNew && field.type === 'password';
+      if (isVisible && isMandatory && !isReadOnly && isEmptyInput(input) && !skipUnchangedPassword) {
+        problems.push(`${fs?.label ?? field.label} is mandatory`);
         continue;
       }
       const changed = f.isNew ? !isEmptyInput(input) || field.type === 'boolean' : writeOnly ? !isEmptyInput(input) : input !== initial[field.element];
       if (!changed) continue;
       try {
-        body[field.element] = fromInputValue(field.type, input ?? '', field.label);
+        body[field.element] = fromInputValue(field.type, input ?? '', fs?.label ?? field.label);
       } catch (err) {
         if (err instanceof InputError) problems.push(err.message);
         else throw err;
@@ -191,6 +286,16 @@ export function FormView({ table, sysId, query, view }: Props) {
             {message}
           </div>
         )}
+        {clientBanners.map((b, bi) => (
+          <div
+            key={bi}
+            className={`banner ${b.type === 'error' ? 'banner-error' : 'banner-info'}`}
+            role={b.type === 'error' ? 'alert' : 'status'}
+            data-testid={`client-banner-${b.type}`}
+          >
+            {b.text}
+          </div>
+        ))}
         <ErrorBanner error={error} />
         {!f.isNew && !f.access.canWrite && <div className="muted small">Read only: you are not allowed to change this record.</div>}
         {f.sections.map((section, si) => (
@@ -200,24 +305,30 @@ export function FormView({ table, sysId, query, view }: Props) {
               {section.elements.map((el) => {
                 const field = byName.get(el);
                 if (!field) return null;
-                const readOnly = !canEdit(field);
+                const fs = fieldStates[el];
+                if (fs && !fs.visible) return null;
+                const readOnly = fs ? fs.readOnly : !canEdit(field);
+                const mandatory = fs ? fs.mandatory : field.mandatory;
+                const label = fs ? fs.label : field.label;
                 return (
                   <div key={el} className={`form-field type-${field.type}`}>
                     <label htmlFor={`f_${el}`}>
-                      {field.mandatory && !readOnly && <span className="mandatory" title="Mandatory">*</span>}
-                      {field.label}
+                      {mandatory && !readOnly && <span className="mandatory" title="Mandatory">*</span>}
+                      {label}
                     </label>
                     <FieldInput
-                      field={field}
+                      field={{ ...field, label }}
                       value={values[el] ?? ''}
                       display={displays[el] ?? ''}
                       readOnly={readOnly}
                       isNew={f.isNew}
-                      onChange={(value, display) => {
-                        setValues((m) => ({ ...m, [el]: value }));
-                        if (display !== undefined) setDisplays((m) => ({ ...m, [el]: display }));
-                      }}
+                      onChange={(value, display) => handleFieldChange(el, value, display)}
                     />
+                    {fs?.messages.map((m, mi) => (
+                      <div key={mi} className={`field-msg ${m.type === 'error' ? 'error' : 'muted'} small`} data-testid={`field-msg-${el}`}>
+                        {m.text}
+                      </div>
+                    ))}
                   </div>
                 );
               })}

@@ -42,6 +42,15 @@ export interface ScriptRecordBinding {
   readOnly?: boolean;
 }
 
+export interface ScriptEventBinding {
+  sys_id: string;
+  name: string;
+  table: string | null;
+  instance: string | null;
+  parm1: string;
+  parm2: string;
+}
+
 export interface ScriptExecRequest {
   /** JavaScript source code to run. */
   script: string;
@@ -61,6 +70,8 @@ export interface ScriptExecRequest {
   current?: ScriptRecordBinding;
   /** Optional `previous` record binding. */
   previous?: ScriptRecordBinding;
+  /** Optional `event` binding (for `sysevent_script_action` and event-triggered notification conditions). */
+  event?: ScriptEventBinding;
   /** Active Script Includes (`name -> script`) available for lazy loading. */
   includes?: ReadonlyMap<string, string>;
   /** Override the runtime's default timeout for this execution. */
@@ -214,6 +225,7 @@ export class ScriptRuntime {
             displayField: engine.meta.hasTable(req.previous.table) ? engine.meta.displayField(req.previous.table).element : 'sys_id',
           }
         : null,
+      event: req.event ?? null,
     };
 
     const hostDispatch = async (op: string, payload: Record<string, unknown> = {}): Promise<unknown> => {
@@ -383,6 +395,30 @@ export class ScriptRuntime {
       }
       case 'gs:uuid':
         return randomUUID();
+      case 'gs:eventQueue': {
+        if (ctx.readOnly) throw new ForbiddenError('Cannot queue events in a read-only script context');
+        const name = String(payload.name ?? '').trim();
+        if (!name) throw new ValidationError('Event name is required');
+        const table = typeof payload.table === 'string' && payload.table.trim() ? payload.table.trim() : null;
+        const instance = typeof payload.instance === 'string' && payload.instance.trim() ? payload.instance.trim() : null;
+        const parm1 = payload.parm1 == null ? '' : String(payload.parm1);
+        const parm2 = payload.parm2 == null ? '' : String(payload.parm2);
+        const created = await engine.insert(
+          'sys_event',
+          {
+            name,
+            table,
+            instance,
+            parm1,
+            parm2,
+            state: 'ready',
+            claimed_by: ctx.session.userName,
+          },
+          ctx.grSession,
+          { workflow: false },
+        );
+        return String(created.sys_id);
+      }
       case 'include:load': {
         const name = String(payload.name ?? '');
         const src = ctx.includes.get(name);

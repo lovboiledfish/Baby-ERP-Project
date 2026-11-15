@@ -5,7 +5,7 @@ The core idea: **everything is a record**. Tables, fields and choices are rows i
 `sys_dictionary`, `sys_choice`), and inserting one of those rows *is* the schema change. Users, roles, groups and
 ACLs are records too (`sys_user*`, `sys_security_acl`), and the data engine enforces them on every access.
 
-Status: **Phase 0 - 4** (foundations, dictionary, data engine, Table API, identity and ACLs, generated UI, sandboxed server scripting). See the design doc for the roadmap.
+Status: **Phase 0 - 5** (foundations, dictionary, data engine, Table API, identity and ACLs, generated UI, sandboxed server scripting, events/jobs/notifications & client scripts/UI policies). See the design doc for the roadmap.
 
 ## Quick start (Windows, portable Node in `.tools/`)
 
@@ -33,12 +33,15 @@ packages/
   kernel/   db adapter (PGlite + savepoints), versioned bootstrap, meta service + hooks + schema compiler,
             data engine (query compiler, coercion, audit, numbering, journal fields), GlideRecord, Instance,
             security (ACL evaluator, auth/sessions/impersonation, password hashing),
-            ui (layouts, per-record field access, related lists, activity stream),
-            script (isolated-vm V8 sandbox, Business Rules, Script Includes, scripted ACLs, background scripts)
+            ui (layouts, per-record field access, related lists, activity stream, client scripts & UI policies),
+            script (isolated-vm V8 sandbox, Business Rules, Script Includes, scripted ACLs, background scripts),
+            events (transactional event outbox, Script Actions, Scheduled Jobs with cron, Email Notifications)
   server/   Fastify: /api/steward/auth, /api/now/table (Table API), /api/steward/meta (Meta API),
-            /api/steward/ui (UI API), /api/steward/script (Script API), and the built web UI with SPA fallback
-  web/      React 19 + Vite SPA: login, navigator, lists, condition builder, forms, reference picker,
-            related lists, activity stream, table builder, list/form layout editors, Scripts - Background
+            /api/steward/ui (UI API), /api/steward/script (Script API), /api/steward/events (Events/Jobs API),
+            and the built web UI with SPA fallback
+  web/      React 19 + Vite SPA: login, navigator, lists, condition builder, forms (with g_form Client Scripts
+            and UI Policies), reference picker, related lists, activity stream, table builder, list/form
+            layout editors, Scripts - Background
 docs/
   adr/      architecture decision records
   api.http  manual walkthrough
@@ -76,7 +79,13 @@ docs/
   `before`, `after`, `async`, `order`, `filter_condition`, `condition`, `current.setAbortAction(true)`,
   `setWorkflow(false)`), scripted ACLs (`sys_security_acl.script`, read-only fail-closed), and
   `Scripts - Background` (`/sys.scripts.do` + `/api/steward/script`). See ADR 0006.
+- **Events, scheduled jobs, email notifications, and client logic**:
+  transactional event outbox (`sys_event` + `gs.eventQueue`), Script Actions (`sysevent_script_action`),
+  Scheduled Jobs (`sys_trigger`: `once`, `interval`, and 5-field `cron`), Email Notifications
+  (`sysevent_email_action` -> `sys_email` with user/group recipient expansion, `${field.dot.walk}` templates,
+  and webhook/Mailpit delivery), Client Scripts (`sys_script_client`: `onLoad`, `onChange`, `onSubmit` with
+  `g_form`), and declarative UI Policies (`sys_ui_policy` + `sys_ui_policy_action`). See ADR 0007.
 
 ## Not yet (by design, see roadmap)
 
-Events/jobs (Phase 5), scoped apps + SDK (Phase 6), flows/SLA (Phase 7).
+Scoped apps + SDK (Phase 6), flows/SLA (Phase 7).

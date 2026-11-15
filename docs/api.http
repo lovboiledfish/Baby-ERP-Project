@@ -249,3 +249,63 @@ Content-Type: application/json
 GET {{base}}/api/steward/script/logs
 Authorization: Bearer {{token}}
 
+### ------------------------------------------------------------------ Phase 5: Events, Jobs, Notifications & Client Logic
+### Transactional outbox (sys_event + gs.eventQueue), Script Actions (sysevent_script_action),
+### Scheduled Jobs (sys_trigger), Email Notifications (sysevent_email_action -> sys_email),
+### Client Scripts (sys_script_client), and UI Policies (sys_ui_policy + sys_ui_policy_action).
+
+### Create an Email Notification when an incident is assigned
+POST {{base}}/api/now/table/sysevent_email_action
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "name": "Incident Assigned",
+  "collection": "incident",
+  "when_to_send": "record",
+  "action_insert": true,
+  "action_update": true,
+  "filter_condition": "assigned_toISNOTEMPTY",
+  "condition": "current.changes('assigned_to')",
+  "recipient_fields": "assigned_to",
+  "subject": "[${number}] Assigned to ${assigned_to.name}: ${short_description}",
+  "message_text": "Hello ${assigned_to.first_name}, incident ${number} has been assigned to you: ${URI}"
+}
+
+### Create an onChange Client Script on incident.priority
+POST {{base}}/api/now/table/sys_script_client
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "name": "Highlight P1 Priority",
+  "table": "incident",
+  "type": "onChange",
+  "field_name": "priority",
+  "script": "function onChange(control, oldValue, newValue) { if (newValue === '1') { g_form.setMandatory('assigned_to', true); g_form.addInfoMessage('P1 incidents require an assignee'); } }"
+}
+
+### Create a Scheduled Job (cron / interval / once)
+POST {{base}}/api/now/table/sys_trigger
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "name": "Periodic Incident Audit",
+  "trigger_type": "cron",
+  "cron_expression": "*/15 * * * *",
+  "script": "var gr = new GlideRecord('incident'); gr.addQuery('priority', 1); gr.query(); gs.info('Open P1 incidents: ' + gr.getRowCount());"
+}
+
+### Trigger a worker tick immediately (runs due sys_trigger jobs + drains sys_event & sys_email)
+POST {{base}}/api/steward/events/tick
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{}
+
+### Inspect delivered outbound emails
+GET {{base}}/api/steward/events/outbox
+Authorization: Bearer {{token}}
+
+

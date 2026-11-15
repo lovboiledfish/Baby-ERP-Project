@@ -313,6 +313,103 @@ describe('generated UI, end to end', () => {
     expect($('[data-testid="script-return"]').textContent).toBe('Return value: 1');
   });
 
+  it('executes onChange Client Scripts, UI Policies, and Email Notifications on form edits', async () => {
+    const sys = systemSession('setup');
+    const bobRows = await inst.engine.query('sys_user', { query: 'user_name=bob' });
+    const bobId = String(bobRows[0]!.sys_id);
+    await inst.engine.update('sys_user', bobId, { email: 'bob@example.com' }, sys);
+
+    // 1. Add an onChange client script on u_vehicle.status:
+    await inst.engine.insert(
+      'sys_script_client',
+      {
+        name: 'Auto-note on New status',
+        table: 'u_vehicle',
+        type: 'onChange',
+        field_name: 'status',
+        script: `function onChange(control, oldValue, newValue) {
+          if (newValue === 'new') {
+            g_form.setValue('model', 'Civic Factory New');
+            g_form.addInfoMessage('Status changed to New');
+          }
+        }`,
+      },
+      sys,
+    );
+
+    // 2. Add a UI Policy on u_vehicle: when status=new, work_notes is mandatory.
+    const policy = await inst.engine.insert(
+      'sys_ui_policy',
+      {
+        short_description: 'Require work notes when status is New',
+        table: 'u_vehicle',
+        conditions: 'status=new',
+        on_load: true,
+        reverse_if_false: true,
+      },
+      sys,
+    );
+    await inst.engine.insert(
+      'sys_ui_policy_action',
+      {
+        ui_policy: policy.sys_id,
+        field: 'work_notes',
+        mandatory: 'true',
+      },
+      sys,
+    );
+
+    // 3. Add an Email Notification on u_vehicle when owner changes:
+    await inst.engine.insert(
+      'sysevent_email_action',
+      {
+        name: 'Vehicle Assigned',
+        collection: 'u_vehicle',
+        when_to_send: 'record',
+        action_insert: true,
+        action_update: true,
+        recipient_fields: 'owner',
+        subject: 'Assigned vehicle ${number}: ${model}',
+        message_text: 'Hello ${owner.first_name}, vehicle ${number} is yours.',
+      },
+      sys,
+    );
+
+    await go(recordUrl);
+    await waitFor(() => byLabel<HTMLSelectElement>('Status'));
+
+    // Trigger onChange(status -> 'new'): updates Model and makes Work Notes mandatory via UI Policy!
+    await type(byLabel<HTMLSelectElement>('Status'), 'new');
+    await waitFor(() => expect(byLabel('Model').value).toBe('Civic Factory New'));
+    expect($('[data-testid="client-banner-info"]').textContent).toBe('Status changed to New');
+
+    // Attempt to save without filling mandatory Work Notes -> blocked by UI Policy mandatory check!
+    await click(button('Update'));
+    await waitFor(() => expect($('[role="alert"]').textContent).toContain('Work Notes is mandatory'));
+
+    // Fill Work Notes and assign Owner to Bob, then Update -> sends email notification to bob@example.com!
+    await type(byLabel<HTMLTextAreaElement>('Work Notes'), 'factory inspection complete');
+    const owner = byLabel('Owner');
+    await act(async () => owner.focus());
+    await act(async () => owner.dispatchEvent(new FocusEvent('focusin', { bubbles: true })));
+    await type(owner, 'Bob');
+    const bobOption = await waitFor(() => {
+      const o = $$('[role="option"]').find((x) => x.textContent?.includes('Bob'));
+      if (!o) throw new Error('no Bob option yet');
+      return o;
+    });
+    await act(async () => bobOption.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true })));
+    await click(button('Update'));
+
+    await waitFor(() => expect($('[role="status"]').textContent).toBe('Record updated'));
+    await inst.flush();
+    expect(
+      inst.events.sentEmails.some(
+        (e) => e.recipients.includes('bob@example.com') && e.subject === 'Assigned vehicle VEH0001000: Civic Factory New',
+      ),
+    ).toBe(true);
+  });
+
   it('a user without write access gets a read-only form (field ACL decisions drive the UI)', async () => {
     const sys = systemSession('setup');
     const acl = await inst.engine.insert('sys_security_acl', { name: 'u_vehicle', operation: 'read' }, sys);
@@ -321,7 +418,7 @@ describe('generated UI, end to end', () => {
     await login('bob', 'bob-pw');
     expect(text()).not.toContain('System Definition');
     await go(recordUrl);
-    await waitFor(() => expect($('[data-testid="form-title"]').textContent).toBe('Changed elsewhere'));
+    await waitFor(() => expect($('[data-testid="form-title"]').textContent).toBe('Civic Factory New'));
     expect(byLabel('Model').disabled).toBe(true);
     expect(byLabel<HTMLSelectElement>('Status').disabled).toBe(true);
     expect($$('button').some((b) => b.textContent === 'Update')).toBe(false);

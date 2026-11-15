@@ -241,3 +241,63 @@ describe('Background Scripts API (/api/steward/script)', () => {
   });
 });
 
+describe('Events & Jobs API (/api/steward/events)', () => {
+  const admin = () => ({ authorization: basic('admin', 'admin-pw') });
+  const carol = () => ({ authorization: basic('carol', 'carol-pw') });
+
+  it('requires admin role for tick and outbox', async () => {
+    expect((await app.inject({ method: 'POST', url: '/api/steward/events/tick' })).statusCode).toBe(401);
+    expect((await app.inject({ method: 'POST', url: '/api/steward/events/tick', headers: carol() })).statusCode).toBe(403);
+    expect((await app.inject({ url: '/api/steward/events/outbox', headers: carol() })).statusCode).toBe(403);
+  });
+
+  it('runs due scheduled jobs on POST /tick and exposes sent emails on GET /outbox', async () => {
+    const sys = systemSession('setup');
+    await inst.engine.update('sys_user', ids.carol!, { email: 'carol@example.com' }, sys);
+    await inst.engine.insert(
+      'sysevent_email_action',
+      {
+        name: 'Ticket Assigned',
+        collection: 'ticket',
+        when_to_send: 'record',
+        action_insert: true,
+        recipient_fields: 'opened_by',
+        subject: 'Ticket opened: ${title}',
+        message_text: 'Opened by ${opened_by.first_name}',
+      },
+      sys,
+    );
+    await inst.engine.insert(
+      'sys_trigger',
+      {
+        name: 'Create Scheduled Ticket',
+        trigger_type: 'once',
+        next_action: '2026-01-01T00:00:00.000Z',
+        script: `
+          var gr = new GlideRecord('ticket');
+          gr.initialize();
+          gr.setValue('title', 'From Scheduled Job');
+          gr.setValue('opened_by', '${ids.carol!}');
+          gr.insert();
+        `,
+      },
+      sys,
+    );
+
+    const tickRes = await app.inject({
+      method: 'POST',
+      url: '/api/steward/events/tick',
+      headers: admin(),
+      payload: { now: '2026-11-15T12:00:00.000Z' },
+    });
+    expect(tickRes.statusCode).toBe(200);
+    expect(json(tickRes).result.triggers_run).toBe(1);
+
+    const outboxRes = await app.inject({ url: '/api/steward/events/outbox', headers: admin() });
+    expect(outboxRes.statusCode).toBe(200);
+    const sent = json(outboxRes).result.sent_emails as Array<{ subject: string; recipients: string[]; body: string }>;
+    expect(sent.some((e) => e.subject === 'Ticket opened: From Scheduled Job' && e.recipients.includes('carol@example.com'))).toBe(true);
+  });
+});
+
+

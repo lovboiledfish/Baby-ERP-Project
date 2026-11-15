@@ -9,6 +9,7 @@ import { matchesRecord } from './match-record';
 import {
   ScriptRuntime,
   checkScriptSyntax,
+  type ScriptExecRequest,
   type ScriptExecResult,
   type ScriptLogEntry,
   type ScriptRuntimeOptions,
@@ -376,6 +377,21 @@ export class ScriptService {
     });
     this.appendLogs(res.logs);
     return res;
+  }
+
+  /** Execute a script in the sandbox with active Script Includes attached, recording its logs. */
+  async executeWithIncludes(engine: DataEngine, req: Omit<ScriptExecRequest, 'includes'>): Promise<ScriptExecResult> {
+    const res = await this.runtime.run(engine, {
+      ...req,
+      includes: this.includeSources,
+    });
+    this.appendLogs(res.logs);
+    return res;
+  }
+
+  /** Record a system/worker script error entry in `recentLogs`. */
+  recordLog(level: ScriptLogEntry['level'], message: string, source?: string): void {
+    this.appendLogs([{ level, message, source, timestamp: new Date().toISOString() }]);
   }
 
   async close(): Promise<void> {

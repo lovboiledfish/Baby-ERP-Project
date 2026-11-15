@@ -14,8 +14,10 @@ import { titleize } from '../util';
  *   2  Phase 2: identity (roles, groups, memberships), ACLs, sessions
  *   3  Phase 3: UI layouts (sys_ui_list, sys_ui_form, sys_ui_section), journal entries
  *   4  Phase 4: server scripting (sys_script business rules, sys_script_include, ACL scripts)
+ *   5  Phase 5: events (sys_event, sysevent_script_action), scheduled jobs (sys_trigger),
+ *               email notifications (sysevent_email_action, sys_email), client scripts & UI policies
  */
-export const BOOTSTRAP_VERSION = 4;
+export const BOOTSTRAP_VERSION = 5;
 const VERSION_PROPERTY = 'glide.steward.bootstrap_version';
 
 interface BootstrapField {
@@ -328,6 +330,223 @@ export const SYSTEM_TABLES: BootstrapTable[] = [
     ],
     unique: [['name']],
   },
+  // -------------------------------------- events, jobs, notifications, client logic (v5)
+  {
+    name: 'sys_event',
+    label: 'Event',
+    audit: false,
+    fields: [
+      { element: 'name', type: 'string', maxLength: 120, mandatory: true, display: true, label: 'Event name' },
+      { element: 'table', type: 'string', maxLength: 80, label: 'Table' },
+      { element: 'instance', type: 'guid', label: 'Record' },
+      { element: 'parm1', type: 'string', maxLength: 255, label: 'Parameter 1' },
+      { element: 'parm2', type: 'string', maxLength: 255, label: 'Parameter 2' },
+      {
+        element: 'state',
+        type: 'choice',
+        defaultValue: 'ready',
+        choices: [
+          { value: 'ready', label: 'Ready' },
+          { value: 'processed', label: 'Processed' },
+          { value: 'error', label: 'Error' },
+        ],
+      },
+      { element: 'claimed_by', type: 'string', maxLength: 80, readOnly: true, label: 'Claimed by' },
+      { element: 'processed', type: 'datetime', readOnly: true, label: 'Processed on' },
+      { element: 'error_message', type: 'text', readOnly: true, label: 'Error' },
+    ],
+    indexes: [['state'], ['name']],
+  },
+  {
+    name: 'sysevent_script_action',
+    label: 'Script Action',
+    fields: [
+      { element: 'name', type: 'string', maxLength: 100, mandatory: true, display: true },
+      { element: 'event_name', type: 'string', maxLength: 120, mandatory: true, label: 'Event name' },
+      { element: 'order', type: 'integer', defaultValue: '100' },
+      { element: 'condition_script', type: 'string', maxLength: 255, label: 'Condition script' },
+      { element: 'script', type: 'script', mandatory: true },
+      { element: 'active', type: 'boolean', defaultValue: 'true' },
+      { element: 'description', type: 'text' },
+    ],
+    indexes: [['event_name']],
+  },
+  {
+    name: 'sys_trigger',
+    label: 'Scheduled Job',
+    fields: [
+      { element: 'name', type: 'string', maxLength: 100, mandatory: true, display: true },
+      {
+        element: 'trigger_type',
+        type: 'choice',
+        mandatory: true,
+        defaultValue: 'interval',
+        label: 'Trigger type',
+        choices: [
+          { value: 'interval', label: 'Repeat interval' },
+          { value: 'once', label: 'Run once' },
+          { value: 'cron', label: 'Cron expression' },
+        ],
+      },
+      { element: 'repeat_seconds', type: 'integer', defaultValue: '60', label: 'Repeat (seconds)' },
+      { element: 'cron_expression', type: 'string', maxLength: 80, label: 'Cron expression' },
+      { element: 'next_action', type: 'datetime', label: 'Next action' },
+      { element: 'last_run', type: 'datetime', readOnly: true, label: 'Last run' },
+      { element: 'run_count', type: 'integer', defaultValue: '0', readOnly: true, label: 'Run count' },
+      {
+        element: 'state',
+        type: 'choice',
+        defaultValue: 'ready',
+        choices: [
+          { value: 'ready', label: 'Ready' },
+          { value: 'running', label: 'Running' },
+          { value: 'complete', label: 'Complete' },
+          { value: 'error', label: 'Error' },
+        ],
+      },
+      { element: 'script', type: 'script', mandatory: true },
+      { element: 'active', type: 'boolean', defaultValue: 'true' },
+      { element: 'description', type: 'text' },
+    ],
+    indexes: [['state', 'next_action']],
+  },
+  {
+    name: 'sysevent_email_action',
+    label: 'Email Notification',
+    fields: [
+      { element: 'name', type: 'string', maxLength: 100, mandatory: true, display: true },
+      { element: 'collection', type: 'string', maxLength: 80, mandatory: true, label: 'Table' },
+      {
+        element: 'when_to_send',
+        type: 'choice',
+        mandatory: true,
+        defaultValue: 'record',
+        label: 'Send when',
+        choices: [
+          { value: 'record', label: 'Record inserted or updated' },
+          { value: 'event', label: 'Event is fired' },
+        ],
+      },
+      { element: 'action_insert', type: 'boolean', defaultValue: 'false', label: 'Inserted' },
+      { element: 'action_update', type: 'boolean', defaultValue: 'false', label: 'Updated' },
+      { element: 'event_name', type: 'string', maxLength: 120, label: 'Event name' },
+      { element: 'filter_condition', type: 'text', label: 'Condition' },
+      { element: 'condition', type: 'string', maxLength: 255, label: 'Advanced condition' },
+      { element: 'recipient_fields', type: 'string', maxLength: 255, label: 'Users/Groups in fields' },
+      { element: 'recipient_users', type: 'string', maxLength: 255, label: 'Recipients' },
+      { element: 'event_parm_1', type: 'boolean', defaultValue: 'false', label: 'Event parm 1 contains recipient' },
+      { element: 'subject', type: 'string', maxLength: 255, mandatory: true, label: 'Subject' },
+      { element: 'message_text', type: 'text', label: 'Message' },
+      { element: 'active', type: 'boolean', defaultValue: 'true' },
+      { element: 'description', type: 'text' },
+    ],
+    indexes: [['collection']],
+  },
+  {
+    name: 'sys_email',
+    label: 'Email',
+    audit: false,
+    fields: [
+      { element: 'subject', type: 'string', maxLength: 255, display: true },
+      { element: 'recipients', type: 'text', mandatory: true, label: 'Recipients' },
+      { element: 'body', type: 'text', label: 'Body' },
+      {
+        element: 'type',
+        type: 'choice',
+        defaultValue: 'send-ready',
+        choices: [
+          { value: 'send-ready', label: 'Send-ready' },
+          { value: 'sent', label: 'Sent' },
+          { value: 'send-failed', label: 'Send-failed' },
+        ],
+      },
+      { element: 'target_table', type: 'string', maxLength: 80, label: 'Target table' },
+      { element: 'instance', type: 'guid', label: 'Target record' },
+      { element: 'notification', type: 'reference', reference: 'sysevent_email_action', label: 'Notification' },
+      { element: 'sent_on', type: 'datetime', readOnly: true, label: 'Sent on' },
+      { element: 'error_message', type: 'text', readOnly: true, label: 'Error' },
+    ],
+    indexes: [['instance'], ['type']],
+  },
+  {
+    name: 'sys_script_client',
+    label: 'Client Script',
+    fields: [
+      { element: 'name', type: 'string', maxLength: 100, mandatory: true, display: true },
+      { element: 'table', type: 'string', maxLength: 80, mandatory: true, label: 'Table' },
+      {
+        element: 'type',
+        type: 'choice',
+        mandatory: true,
+        defaultValue: 'onLoad',
+        choices: [
+          { value: 'onLoad', label: 'onLoad' },
+          { value: 'onChange', label: 'onChange' },
+          { value: 'onSubmit', label: 'onSubmit' },
+        ],
+      },
+      { element: 'field_name', type: 'string', maxLength: 80, label: 'Field name' },
+      { element: 'order', type: 'integer', defaultValue: '100' },
+      { element: 'script', type: 'script', mandatory: true },
+      { element: 'active', type: 'boolean', defaultValue: 'true' },
+      { element: 'description', type: 'text' },
+    ],
+    indexes: [['table']],
+  },
+  {
+    name: 'sys_ui_policy',
+    label: 'UI Policy',
+    fields: [
+      { element: 'short_description', type: 'string', maxLength: 160, mandatory: true, display: true, label: 'Short description' },
+      { element: 'table', type: 'string', maxLength: 80, mandatory: true, label: 'Table' },
+      { element: 'conditions', type: 'text', label: 'Conditions' },
+      { element: 'on_load', type: 'boolean', defaultValue: 'true', label: 'On load' },
+      { element: 'reverse_if_false', type: 'boolean', defaultValue: 'true', label: 'Reverse if false' },
+      { element: 'order', type: 'integer', defaultValue: '100' },
+      { element: 'active', type: 'boolean', defaultValue: 'true' },
+    ],
+    indexes: [['table']],
+  },
+  {
+    name: 'sys_ui_policy_action',
+    label: 'UI Policy Action',
+    fields: [
+      ref('ui_policy', 'sys_ui_policy', { label: 'UI policy' }),
+      { element: 'field', type: 'string', maxLength: 80, mandatory: true, display: true, label: 'Field name' },
+      {
+        element: 'mandatory',
+        type: 'choice',
+        defaultValue: 'ignore',
+        choices: [
+          { value: 'true', label: 'True' },
+          { value: 'false', label: 'False' },
+          { value: 'ignore', label: 'Leave alone' },
+        ],
+      },
+      {
+        element: 'visible',
+        type: 'choice',
+        defaultValue: 'ignore',
+        choices: [
+          { value: 'true', label: 'True' },
+          { value: 'false', label: 'False' },
+          { value: 'ignore', label: 'Leave alone' },
+        ],
+      },
+      {
+        element: 'disabled',
+        type: 'choice',
+        defaultValue: 'ignore',
+        label: 'Read only',
+        choices: [
+          { value: 'true', label: 'True' },
+          { value: 'false', label: 'False' },
+          { value: 'ignore', label: 'Leave alone' },
+        ],
+      },
+      { element: 'cleared', type: 'boolean', defaultValue: 'false', label: 'Clear the field value' },
+    ],
+  },
 ];
 
 export async function isBootstrapped(db: Db): Promise<boolean> {
@@ -535,6 +754,15 @@ const SEED_STEPS: Array<{ version: number; run(tx: Db): Promise<void> }> = [
       }
     },
   },
+  {
+    version: 5,
+    async run(tx) {
+      for (const [name, elements] of SEED_LIST_LAYOUTS) {
+        const exists = await tx.query(`SELECT 1 FROM "sys_ui_list" WHERE "name" = $1 AND "view" = 'default'`, [name]);
+        if (!exists.rows.length) await insertRow(tx, 'sys_ui_list', { name, view: 'default', elements });
+      }
+    },
+  },
 ];
 
 /** Default list columns for system tables: [table, comma-separated field paths]. */
@@ -556,4 +784,12 @@ const SEED_LIST_LAYOUTS: Array<[string, string]> = [
   ['sys_journal_field', 'name,element,element_id,value,sys_created_by,sys_created_on'],
   ['sys_script', 'name,collection,when,order,action_insert,action_update,action_delete,active'],
   ['sys_script_include', 'name,api_name,client_callable,active,description,sys_updated_on'],
+  ['sys_event', 'name,table,instance,parm1,parm2,state,processed,sys_created_on'],
+  ['sysevent_script_action', 'name,event_name,order,active,sys_updated_on'],
+  ['sys_trigger', 'name,trigger_type,repeat_seconds,cron_expression,next_action,state,run_count,active'],
+  ['sysevent_email_action', 'name,collection,when_to_send,event_name,subject,active'],
+  ['sys_email', 'subject,recipients,type,target_table,instance,sent_on,sys_created_on'],
+  ['sys_script_client', 'name,table,type,field_name,order,active'],
+  ['sys_ui_policy', 'short_description,table,conditions,on_load,reverse_if_false,order,active'],
+  ['sys_ui_policy_action', 'ui_policy,field,mandatory,visible,disabled,cleared'],
 ];

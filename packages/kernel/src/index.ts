@@ -34,6 +34,7 @@ export {
 export {
   ScriptRuntime,
   checkScriptSyntax,
+  type ScriptEventBinding,
   type ScriptExecRequest,
   type ScriptExecResult,
   type ScriptLogEntry,
@@ -43,6 +44,17 @@ export {
 } from './script/sandbox';
 export { ScriptService, type BusinessRule, type RuleWhen, type ScriptInclude } from './script/script-service';
 export { matchesRecord } from './script/match-record';
+export { nextCronDate, parseCron, type ParsedCron } from './events/cron';
+export {
+  EventService,
+  createWebhookEmailTransport,
+  type EmailNotification,
+  type EmailTransport,
+  type EventServiceOptions,
+  type OutboundEmail,
+  type ScriptAction,
+  type TickResult,
+} from './events/event-service';
 export {
   ConflictError,
   ForbiddenError,
@@ -61,8 +73,11 @@ export {
   type FormSection,
   type ListLayout,
   type RelatedList,
+  type UiClientScript,
   type UiColumn,
   type UiField,
+  type UiPolicy,
+  type UiPolicyAction,
   type UiTable,
 } from './ui/ui-service';
 export { parseElements, parseRelated, resolvePath } from './ui/layout';
