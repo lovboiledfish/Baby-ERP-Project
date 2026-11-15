@@ -1,0 +1,17 @@
+{
+  "name": "@steward/sdk",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./cli": "./src/cli.ts"
+  },
+  "bin": {
+    "steward": "./src/cli.ts"
+  },
+  "dependencies": {
+    "@steward/shared": "*",
+    "zod": "^4.6.7"
+  }
+}

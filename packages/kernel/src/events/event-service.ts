@@ -64,6 +64,7 @@ export interface TickResult {
   triggersRun: number;
   eventsProcessed: number;
   emailsSent: number;
+  slaBreaches: number;
 }
 
 interface ScriptActionRow {
@@ -365,13 +366,14 @@ export class EventService {
   }
 
   /**
-   * Run one worker cycle: execute all due `sys_trigger` scheduled jobs as of `now`,
-   * then drain all pending events and outbound emails.
+   * Run one worker cycle: execute all due `sys_trigger` scheduled jobs and evaluate
+   * active SLA timers as of `now`, then drain all pending events and outbound emails.
    */
   async tick(rootEngine: DataEngine, now: Date = new Date()): Promise<TickResult> {
     const triggersRun = await this.runDueTriggers(rootEngine, now);
+    const slaBreaches = rootEngine.slas ? await rootEngine.slas.evaluateBreaches(rootEngine, now) : 0;
     const { eventsProcessed, emailsSent } = await this.drain(rootEngine);
-    return { triggersRun, eventsProcessed, emailsSent };
+    return { triggersRun, eventsProcessed, emailsSent, slaBreaches };
   }
 
   /** Start a periodic background worker that runs `tick` every `intervalMs`. */
@@ -512,6 +514,11 @@ export class EventService {
             continue;
           }
           await this.createEmailFromNotification(rootEngine, notif, tbl, rec, eventBinding);
+        }
+
+        // 3. Trigger any matching event-driven Flows (`sys_hub_flow`).
+        if (rootEngine.flows) {
+          await rootEngine.flows.onEvent(rootEngine, eventBinding, targetTable, targetRecord);
         }
       } catch (e) {
         const msg = (e as Error).message ?? String(e);

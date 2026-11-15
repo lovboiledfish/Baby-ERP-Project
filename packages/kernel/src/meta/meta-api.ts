@@ -19,6 +19,7 @@ export interface FieldDescription {
   system: boolean;
   definedOn: string;
   column: string;
+  scope: string;
   choices: Array<{ value: string; label: string }>;
 }
 
@@ -31,6 +32,7 @@ export interface TableDescription {
   extendable: boolean;
   numberPrefix: string | null;
   audit: boolean;
+  scope: string;
   children: string[];
   fields: FieldDescription[];
 }
@@ -52,6 +54,7 @@ export function describeTable(meta: MetaService, name: string): TableDescription
     extendable: t.extendable,
     numberPrefix: t.numberPrefix,
     audit: t.audit,
+    scope: t.scope,
     children: [...t.children],
     fields: [...meta.fields(name).values()].map((f) => ({
       element: f.element,
@@ -66,6 +69,7 @@ export function describeTable(meta: MetaService, name: string): TableDescription
       system: f.system,
       definedOn: f.table,
       column: f.column,
+      scope: f.scope,
       choices: f.choices.map((c) => ({ value: c.value, label: c.label })),
     })),
   };
@@ -87,6 +91,7 @@ export class MetaApi {
         if (!e.meta.hasTable(spec.extends)) throw new ValidationError(`Cannot extend unknown table ${spec.extends}`);
         superSysId = e.meta.getTable(spec.extends).sysId;
       }
+      const tableScope = spec.scope ?? session.scope ?? 'global';
       await e.insert(
         'sys_db_object',
         {
@@ -96,10 +101,13 @@ export class MetaApi {
           is_extendable: spec.extendable,
           number_prefix: spec.numberPrefix,
           audit: spec.audit,
+          sys_scope: tableScope,
         },
         session,
       );
-      for (const field of spec.fields ?? []) await this.insertField(e, spec.name, field, session);
+      for (const field of spec.fields ?? []) {
+        await this.insertField(e, spec.name, { ...field, scope: field.scope ?? tableScope }, session);
+      }
       return describeTable(e.meta, spec.name);
     });
   }
@@ -134,6 +142,7 @@ export class MetaApi {
     if (spec.choices?.length && spec.type !== 'choice') {
       throw new ValidationError(`Choices are only allowed on choice fields (${table}.${spec.element})`);
     }
+    const fieldScope = spec.scope ?? session.scope ?? e.meta.getTable(table).scope ?? 'global';
     await e.insert(
       'sys_dictionary',
       {
@@ -146,13 +155,22 @@ export class MetaApi {
         mandatory: spec.mandatory,
         default_value: spec.defaultValue === undefined ? undefined : String(spec.defaultValue),
         display: spec.display,
+        read_only: spec.readOnly,
+        sys_scope: fieldScope,
       },
       session,
     );
     for (const [i, c] of (spec.choices ?? []).entries()) {
       await e.insert(
         'sys_choice',
-        { name: table, element: spec.element, value: c.value, label: c.label, sequence: c.sequence ?? (i + 1) * 100 },
+        {
+          name: table,
+          element: spec.element,
+          value: c.value,
+          label: c.label,
+          sequence: c.sequence ?? (i + 1) * 100,
+          sys_scope: fieldScope,
+        },
         session,
       );
     }

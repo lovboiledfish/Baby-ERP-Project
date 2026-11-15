@@ -5,7 +5,10 @@ import { ConflictError, ForbiddenError, NotFoundError, ValidationError, toStewar
 import type { MetaService } from '../meta/meta-service';
 import type { FieldMeta } from '../meta/types';
 import { matchesRecord } from '../script/match-record';
+import type { AppService } from '../app/app-service';
 import type { EventService } from '../events/event-service';
+import type { FlowService } from '../flow/flow-service';
+import type { SlaService } from '../flow/sla-service';
 import type { ScriptService } from '../script/script-service';
 import type { AclService } from '../security/acl-service';
 import { resolveDynamic } from '../security/dynamic';
@@ -95,6 +98,9 @@ export class DataEngine {
     readonly acl: AclService,
     readonly scripts?: ScriptService,
     readonly events?: EventService,
+    readonly apps?: AppService,
+    readonly flows?: FlowService,
+    readonly slas?: SlaService,
     private readonly tx?: Db,
     txState?: TxState,
   ) {
@@ -116,6 +122,9 @@ export class DataEngine {
     const aclVersion = this.acl.version;
     const scriptVersion = this.scripts?.version ?? 0;
     const eventVersion = this.events?.version ?? 0;
+    const appVersion = this.apps?.version ?? 0;
+    const flowVersion = this.flows?.version ?? 0;
+    const slaVersion = this.slas?.version ?? 0;
 
     if (this.tx) {
       const asyncLen = this.txState.asyncQueue.length;
@@ -127,6 +136,9 @@ export class DataEngine {
         if (this.acl.version !== aclVersion) await this.acl.load(this.tx);
         if (this.scripts && this.scripts.version !== scriptVersion) await this.scripts.load(this.tx);
         if (this.events && this.events.version !== eventVersion) await this.events.load(this.tx);
+        if (this.apps && this.apps.version !== appVersion) await this.apps.load(this.tx);
+        if (this.flows && this.flows.version !== flowVersion) await this.flows.load(this.tx);
+        if (this.slas && this.slas.version !== slaVersion) await this.slas.load(this.tx);
         throw toStewardError(e) ?? e;
       }
     }
@@ -134,7 +146,21 @@ export class DataEngine {
     const state: TxState = { depth: 0, asyncQueue: [] };
     try {
       const result = await this.rootDb.transaction((tx) =>
-        fn(new DataEngine(this.rootDb, this.meta, this.hooks, this.acl, this.scripts, this.events, tx, state)),
+        fn(
+          new DataEngine(
+            this.rootDb,
+            this.meta,
+            this.hooks,
+            this.acl,
+            this.scripts,
+            this.events,
+            this.apps,
+            this.flows,
+            this.slas,
+            tx,
+            state,
+          ),
+        ),
       );
       if (state.asyncQueue.length > 0 && this.scripts) {
         this.scripts.enqueueAsync(state.asyncQueue, this);
@@ -146,6 +172,9 @@ export class DataEngine {
       if (this.acl.version !== aclVersion) await this.acl.load(this.rootDb);
       if (this.scripts && this.scripts.version !== scriptVersion) await this.scripts.load(this.rootDb);
       if (this.events && this.events.version !== eventVersion) await this.events.load(this.rootDb);
+      if (this.apps && this.apps.version !== appVersion) await this.apps.load(this.rootDb);
+      if (this.flows && this.flows.version !== flowVersion) await this.flows.load(this.rootDb);
+      if (this.slas && this.slas.version !== slaVersion) await this.slas.load(this.rootDb);
       throw toStewardError(e) ?? e;
     }
   }
@@ -154,6 +183,7 @@ export class DataEngine {
 
   async query(table: string, opts: QueryOptions = {}): Promise<RecordValues[]> {
     const session = opts.session ?? SYSTEM_SESSION;
+    this.apps?.assertTableScopeAccess(session, table, 'read');
     const access = this.readAccessFor(session, table);
     const ast = resolveDynamic(toAst(opts.query), session);
 
@@ -176,6 +206,7 @@ export class DataEngine {
   }
 
   async count(table: string, query?: string | QueryAst, session: Session = SYSTEM_SESSION): Promise<number> {
+    this.apps?.assertTableScopeAccess(session, table, 'read');
     const access = this.readAccessFor(session, table);
     const ast = resolveDynamic(toAst(query), session);
 
@@ -221,6 +252,7 @@ export class DataEngine {
 
   private async doInsert(table: string, values: RecordValues, session: Session, opts: InsertOptions): Promise<RecordValues> {
     const t = this.meta.getTable(table);
+    this.apps?.assertTableScopeAccess(session, table, 'create');
     const fields = this.meta.fields(table);
     const current: RecordValues = {};
 
@@ -255,6 +287,13 @@ export class DataEngine {
     }
     const sysId = (current.sys_id as string | null) ?? randomUUID();
     current.sys_id = sysId;
+    const sysScope =
+      typeof current.sys_scope === 'string' && current.sys_scope
+        ? current.sys_scope
+        : session.scope && session.scope !== 'global'
+          ? session.scope
+          : (t.scope || 'global');
+    current.sys_scope = sysScope;
 
     await this.runHooks('before', 'insert', table, current, session, undefined, opts.workflow);
     this.recoerce(table, current, {});
@@ -271,6 +310,7 @@ export class DataEngine {
       ['sys_updated_on', now],
       ['sys_updated_by', session.userName],
       ['sys_mod_count', 0],
+      ['sys_scope', typeof current.sys_scope === 'string' && current.sys_scope ? current.sys_scope : sysScope],
     ];
     for (const [key, value] of Object.entries(current)) {
       const f = fields.get(key)!;
@@ -302,6 +342,7 @@ export class DataEngine {
 
   private async doUpdate(table: string, sysId: string, values: RecordValues, session: Session, opts: UpdateOptions): Promise<RecordValues> {
     const t = this.meta.getTable(table);
+    this.apps?.assertTableScopeAccess(session, table, 'write');
     const fields = this.meta.fields(table);
     const previous = await this.lockRecord(table, sysId);
     if (!session.system) {
@@ -379,6 +420,7 @@ export class DataEngine {
 
   private async doDelete(table: string, sysId: string, session: Session, opts: DeleteOptions): Promise<void> {
     const t = this.meta.getTable(table);
+    this.apps?.assertTableScopeAccess(session, table, 'delete');
     const previous = await this.lockRecord(table, sysId);
     if (!session.system) {
       if (!(await this.canAccess(table, sysId, 'read', session))) throw notFound(table, sysId);
@@ -650,7 +692,7 @@ export class DataEngine {
   private writableField(table: string, key: string, fields: Map<string, FieldMeta>, isInsert: boolean): FieldMeta | undefined {
     const f = fields.get(key);
     if (!f) throw new ValidationError(`Unknown field ${table}.${key}`);
-    if (f.system) return isInsert && key === 'sys_id' ? f : undefined; // system fields are silently ignored
+    if (f.system) return isInsert && (key === 'sys_id' || key === 'sys_scope') ? f : undefined; // system fields are silently ignored
     return f;
   }
 
@@ -660,7 +702,7 @@ export class DataEngine {
     for (const key of Object.keys(current)) {
       const f = fields.get(key);
       if (!f) throw new ValidationError(`Unknown field ${table}.${key}`);
-      if (f.system && key !== 'sys_id') continue;
+      if (f.system && key !== 'sys_id' && key !== 'sys_scope') continue;
       if (!(key in baseline) || current[key] !== baseline[key]) current[key] = coerceValue(f, current[key]);
     }
   }
@@ -778,6 +820,15 @@ export class DataEngine {
           if (table === 'sys_event' && operation === 'insert' && current.state === 'ready') {
             this.txState.asyncQueue.push(this.events.buildDrainTask());
           }
+          if (table === 'sys_email' && operation === 'insert' && current.type === 'send-ready') {
+            this.txState.asyncQueue.push(this.events.buildDrainTask());
+          }
+        }
+        if (workflow !== false && this.slas) {
+          await this.slas.onRecordWrite(this, operation, table, current);
+        }
+        if (this.flows && (workflow !== false || table === 'sysapproval_approver')) {
+          await this.flows.onRecordWrite(this, operation, table, current, session, previous);
         }
       }
     } finally {

@@ -308,4 +308,15 @@ Content-Type: application/json
 GET {{base}}/api/steward/events/outbox
 Authorization: Bearer {{token}}
 
+### ------------------------------------------------------------------ Phase 6 & 7: Scoped Apps, SDK, Flows & SLAs
+
+### List installed application scopes
+GET {{base}}/api/steward/apps
+Authorization: Bearer {{token}}
+
+### Generate TypeScript .d.ts definitions from the live dictionary
+GET {{base}}/api/steward/apps/types?scope=global
+Authorization: Bearer {{token}}
+
+
 

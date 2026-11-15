@@ -10,7 +10,12 @@ export function Nav() {
   const { custom, system } = useMemo(() => {
     const f = filter.trim().toLowerCase();
     const visible = tables.filter((t) => !f || t.name.includes(f) || t.label.toLowerCase().includes(f));
-    const isSys = (name: string) => name.startsWith('sys_') || name.startsWith('sysevent_');
+    const isSys = (name: string) =>
+      name.startsWith('sys_') ||
+      name.startsWith('sysevent_') ||
+      name === 'sysapproval_approver' ||
+      name === 'contract_sla' ||
+      name === 'task_sla';
     return { custom: visible.filter((t) => !isSys(t.name)), system: visible.filter((t) => isSys(t.name)) };
   }, [tables, filter]);
 
@@ -58,6 +63,27 @@ export function Nav() {
             </li>
             <li>
               <Link href={listUrl('sys_trigger')}>Scheduled Jobs</Link>
+            </li>
+            <li>
+              <Link href={listUrl('sys_scope')}>Applications</Link>
+            </li>
+            <li>
+              <Link href={listUrl('sys_update_set')}>Update Sets</Link>
+            </li>
+            <li>
+              <Link href={listUrl('sys_hub_flow')}>Flows</Link>
+            </li>
+            <li>
+              <Link href={listUrl('sys_flow_context')}>Flow Contexts</Link>
+            </li>
+            <li>
+              <Link href={listUrl('sysapproval_approver')}>Approvals</Link>
+            </li>
+            <li>
+              <Link href={listUrl('contract_sla')}>SLA Definitions</Link>
+            </li>
+            <li>
+              <Link href={listUrl('task_sla')}>Task SLAs</Link>
             </li>
             <li>
               <Link href={scriptsUrl()}>Scripts - Background</Link>

@@ -4,7 +4,7 @@ import type { Operation } from '../data/hooks';
 import type { Db } from '../db/db';
 import { ForbiddenError, ValidationError } from '../errors';
 import type { MetaService } from '../meta/meta-service';
-import type { Session } from '../session';
+import { withScope, type Session } from '../session';
 import { matchesRecord } from './match-record';
 import {
   ScriptRuntime,
@@ -27,6 +27,7 @@ export interface BusinessRule {
   filterCondition: QueryAst | null;
   condition: string | null;
   script: string;
+  scope: string;
   broken: boolean;
 }
 
@@ -36,6 +37,7 @@ export interface ScriptInclude {
   apiName: string;
   script: string;
   clientCallable: boolean;
+  scope: string;
   broken: boolean;
 }
 
@@ -51,6 +53,7 @@ interface RuleRow {
   filter_condition: string | null;
   condition: string | null;
   script: string | null;
+  sys_scope: string | null;
 }
 
 interface IncludeRow {
@@ -59,6 +62,7 @@ interface IncludeRow {
   api_name: string | null;
   script: string | null;
   client_callable: boolean | null;
+  sys_scope: string | null;
 }
 
 const MAX_RECENT_LOGS = 500;
@@ -73,6 +77,7 @@ export class ScriptService {
   private rulesByTable = new Map<string, BusinessRule[]>();
   private includes = new Map<string, ScriptInclude>();
   private includeSources = new Map<string, string>();
+  private includeScopes = new Map<string, { scope: string; apiName: string }>();
   private readonly inFlightAsync = new Set<Promise<void>>();
   readonly recentLogs: ScriptLogEntry[] = [];
   version = 0;
@@ -87,13 +92,13 @@ export class ScriptService {
   async load(db: Db): Promise<void> {
     const ruleRows = await db.query<RuleRow>(
       `SELECT "sys_id", "name", "collection", "when", "order", "action_insert", "action_update", "action_delete",
-              "filter_condition", "condition", "script"
+              "filter_condition", "condition", "script", "sys_scope"
          FROM "sys_script"
         WHERE "active" IS NOT FALSE
         ORDER BY COALESCE("order", 100) ASC, "sys_created_on" ASC, "sys_id" ASC`,
     );
     const includeRows = await db.query<IncludeRow>(
-      `SELECT "sys_id", "name", "api_name", "script", "client_callable"
+      `SELECT "sys_id", "name", "api_name", "script", "client_callable", "sys_scope"
          FROM "sys_script_include"
         WHERE "active" IS NOT FALSE`,
     );
@@ -146,6 +151,7 @@ export class ScriptService {
         filterCondition,
         condition,
         script,
+        scope: r.sys_scope ?? 'global',
         broken,
       };
       byTable.set(rule.collection, [...(byTable.get(rule.collection) ?? []), rule]);
@@ -153,6 +159,7 @@ export class ScriptService {
 
     const includes = new Map<string, ScriptInclude>();
     const includeSources = new Map<string, string>();
+    const includeScopes = new Map<string, { scope: string; apiName: string }>();
     for (const inc of includeRows.rows) {
       const script = inc.script ?? '';
       let broken = !script.trim();
@@ -163,21 +170,27 @@ export class ScriptService {
           broken = true;
         }
       }
+      const scope = inc.sys_scope ?? 'global';
       const entry: ScriptInclude = {
         sysId: inc.sys_id,
         name: inc.name,
-        apiName: inc.api_name ?? `global.${inc.name}`,
+        apiName: inc.api_name ?? `${scope}.${inc.name}`,
         script,
         clientCallable: Boolean(inc.client_callable),
+        scope,
         broken,
       };
       includes.set(entry.name, entry);
-      if (!broken) includeSources.set(entry.name, entry.script);
+      if (!broken) {
+        includeSources.set(entry.name, entry.script);
+        includeScopes.set(entry.name, { scope: entry.scope, apiName: entry.apiName });
+      }
     }
 
     this.rulesByTable = byTable;
     this.includes = includes;
     this.includeSources = includeSources;
+    this.includeScopes = includeScopes;
     this.version++;
   }
 
@@ -210,13 +223,14 @@ export class ScriptService {
 
     const fields = this.meta.fields(table);
     for (const rule of rules) {
-      if (!(await this.shouldRunRule(engine, rule, table, operation, current, session, previous))) continue;
+      const ruleSession = withScope(session, rule.scope);
+      if (!(await this.shouldRunRule(engine, rule, table, operation, current, ruleSession, previous))) continue;
 
       const mutable = when === 'before' && operation !== 'delete';
       const res = await this.runtime.run(engine, {
         script: rule.script,
         sourceName: `sys_script/${rule.name}.js`,
-        session,
+        session: ruleSession,
         keepElevatedRoles: false,
         current: {
           table,
@@ -227,6 +241,7 @@ export class ScriptService {
         },
         previous: previous ? { table, values: previous } : undefined,
         includes: this.includeSources,
+        includeScopes: this.includeScopes,
       });
       this.appendLogs(res.logs);
 
@@ -265,11 +280,12 @@ export class ScriptService {
       const latest = operation !== 'delete' && sysId ? ((await rootEngine.get(table, sysId)) ?? snapshot) : snapshot;
       for (const rule of rules) {
         try {
-          if (!(await this.shouldRunRule(rootEngine, rule, table, operation, latest, session, undefined))) continue;
+          const ruleSession = withScope(session, rule.scope);
+          if (!(await this.shouldRunRule(rootEngine, rule, table, operation, latest, ruleSession, undefined))) continue;
           const res = await this.runtime.run(rootEngine, {
             script: rule.script,
             sourceName: `sys_script/${rule.name}.async.js`,
-            session,
+            session: ruleSession,
             keepElevatedRoles: false,
             current: {
               table,
@@ -279,6 +295,7 @@ export class ScriptService {
               readOnly: true,
             },
             includes: this.includeSources,
+            includeScopes: this.includeScopes,
           });
           this.appendLogs(res.logs);
         } catch (e) {
@@ -374,16 +391,18 @@ export class ScriptService {
       keepElevatedRoles: true,
       includes: this.includeSources,
       timeoutMs: opts.timeoutMs,
+      includeScopes: this.includeScopes,
     });
     this.appendLogs(res.logs);
     return res;
   }
 
   /** Execute a script in the sandbox with active Script Includes attached, recording its logs. */
-  async executeWithIncludes(engine: DataEngine, req: Omit<ScriptExecRequest, 'includes'>): Promise<ScriptExecResult> {
+  async executeWithIncludes(engine: DataEngine, req: Omit<ScriptExecRequest, 'includes' | 'includeScopes'>): Promise<ScriptExecResult> {
     const res = await this.runtime.run(engine, {
       ...req,
       includes: this.includeSources,
+      includeScopes: this.includeScopes,
     });
     this.appendLogs(res.logs);
     return res;
@@ -429,6 +448,7 @@ export class ScriptService {
         },
         previous: previous ? { table, values: previous } : undefined,
         includes: this.includeSources,
+        includeScopes: this.includeScopes,
       });
       this.appendLogs(res.logs);
       if (!res.value) return false;

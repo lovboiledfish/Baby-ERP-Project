@@ -57,6 +57,8 @@ export const fieldSpecSchema = z.object({
   mandatory: z.boolean().optional(),
   defaultValue: z.union([z.string(), z.number(), z.boolean()]).optional(),
   display: z.boolean().optional(),
+  readOnly: z.boolean().optional(),
+  scope: identifier.optional(),
   choices: z.array(choiceSpecSchema).optional(),
 });
 
@@ -70,6 +72,7 @@ export const tableSpecSchema = z.object({
     .regex(/^[A-Z]{2,6}$/, 'must be 2-6 uppercase letters')
     .optional(),
   audit: z.boolean().optional(),
+  scope: identifier.optional(),
   fields: z.array(fieldSpecSchema).optional(),
 });
 

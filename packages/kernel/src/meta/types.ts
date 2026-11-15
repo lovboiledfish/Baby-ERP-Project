@@ -24,6 +24,8 @@ export interface FieldMeta {
   display: boolean;
   readOnly: boolean;
   system: boolean;
+  /** Application scope (`sys_scope.scope`) that owns this field. */
+  scope: string;
   choices: ChoiceMeta[];
 }
 
@@ -39,6 +41,8 @@ export interface TableMeta {
   extendable: boolean;
   numberPrefix: string | null;
   audit: boolean;
+  /** Application scope (`sys_scope.scope`) that owns this table. */
+  scope: string;
   /** Fields defined directly on this table, including inactive ones. */
   ownFields: Map<string, FieldMeta>;
   children: string[];

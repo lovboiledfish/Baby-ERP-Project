@@ -124,7 +124,7 @@ export function metadataHooks(): SystemHook[] {
       table: 'sys_dictionary',
       when: 'before',
       operations: ['insert'],
-      run({ engine, current }) {
+      run({ engine, current, session }) {
         const { meta } = engine;
         const table = String(current.name ?? '');
         const element = String(current.element ?? '');
@@ -151,10 +151,22 @@ export function metadataHooks(): SystemHook[] {
         }
         if (type === 'string') current.max_length ??= 40;
 
-        // Storage column: reuse the element name unless a sibling already uses it.
+        // Storage column: reuse the element name unless a sibling already uses it, or prefix with
+        // `<scope>_` when a scoped app adds a column to a table hierarchy rooted in another scope.
         const t = meta.getTable(table);
+        const rootTable = meta.getTable(t.root);
+        const fieldScope =
+          typeof current.sys_scope === 'string' && current.sys_scope
+            ? current.sys_scope
+            : (session.scope ?? t.scope ?? 'global');
+        current.sys_scope = fieldScope;
+
         const used = meta.hierarchyColumns(t.root);
-        const column = used.has(element) ? `${table}_${element}` : element;
+        const baseCol =
+          fieldScope !== 'global' && rootTable.scope !== fieldScope && !element.startsWith(`${fieldScope}_`)
+            ? `${fieldScope}_${element}`
+            : element;
+        const column = used.has(baseCol) ? `${table}_${baseCol}` : baseCol;
         if (used.has(column)) throw new ValidationError(`Cannot allocate a storage column for ${table}.${element}`);
         current.column_name = column;
         current.column_label ??= titleize(element);

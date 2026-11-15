@@ -5,7 +5,7 @@ The core idea: **everything is a record**. Tables, fields and choices are rows i
 `sys_dictionary`, `sys_choice`), and inserting one of those rows *is* the schema change. Users, roles, groups and
 ACLs are records too (`sys_user*`, `sys_security_acl`), and the data engine enforces them on every access.
 
-Status: **Phase 0 - 5** (foundations, dictionary, data engine, Table API, identity and ACLs, generated UI, sandboxed server scripting, events/jobs/notifications & client scripts/UI policies). See the design doc for the roadmap.
+Status: **Phase 0 - 7 Complete** (foundations, dictionary, data engine, Table API, identity and ACLs, generated UI, sandboxed server scripting, events/jobs/notifications, client scripts/UI policies, scoped apps/TypeScript SDK/update sets, and durable flows/approvals/SLAs). See the design doc for the architecture roadmap.
 
 ## Quick start (Windows, portable Node in `.tools/`)
 
@@ -29,19 +29,25 @@ Then open [`docs/api.http`](docs/api.http) in VS Code (REST Client) or any HTTP 
 
 ```
 packages/
-  shared/   encoded-query parser/serializer, zod metadata schemas
+  shared/   encoded-query parser/serializer, zod metadata & application package schemas
+  sdk/      Pro-Code TypeScript SDK (@steward/sdk): fluent DSL (defineApp, Table, *Column, Role, Acl,
+            BusinessRule, ScriptInclude, ClientScript, UiPolicy, EmailNotification, Flow, SlaDefinition) & CLI
   kernel/   db adapter (PGlite + savepoints), versioned bootstrap, meta service + hooks + schema compiler,
             data engine (query compiler, coercion, audit, numbering, journal fields), GlideRecord, Instance,
             security (ACL evaluator, auth/sessions/impersonation, password hashing),
             ui (layouts, per-record field access, related lists, activity stream, client scripts & UI policies),
             script (isolated-vm V8 sandbox, Business Rules, Script Includes, scripted ACLs, background scripts),
-            events (transactional event outbox, Script Actions, Scheduled Jobs with cron, Email Notifications)
+            events (transactional event outbox, Script Actions, Scheduled Jobs with cron, Email Notifications),
+            app (scoped apps, cross-scope privilege guard, package deploy/upgrade/uninstall, update sets, .d.ts gen),
+            flow (durable Flow Engine with approvals & wait_for_condition, SLA Engine with pause/resume/breach)
   server/   Fastify: /api/steward/auth, /api/now/table (Table API), /api/steward/meta (Meta API),
             /api/steward/ui (UI API), /api/steward/script (Script API), /api/steward/events (Events/Jobs API),
-            and the built web UI with SPA fallback
+            /api/steward/apps (Apps/SDK/Update Sets API), and the built web UI with SPA fallback
   web/      React 19 + Vite SPA: login, navigator, lists, condition builder, forms (with g_form Client Scripts
             and UI Policies), reference picker, related lists, activity stream, table builder, list/form
             layout editors, Scripts - Background
+apps/
+  itsm/     Dogfood scoped application (x_steward_itsm) built with @steward/sdk
 docs/
   adr/      architecture decision records
   api.http  manual walkthrough
@@ -85,7 +91,17 @@ docs/
   (`sysevent_email_action` -> `sys_email` with user/group recipient expansion, `${field.dot.walk}` templates,
   and webhook/Mailpit delivery), Client Scripts (`sys_script_client`: `onLoad`, `onChange`, `onSubmit` with
   `g_form`), and declarative UI Policies (`sys_ui_policy` + `sys_ui_policy_action`). See ADR 0007.
-
-## Not yet (by design, see roadmap)
-
-Scoped apps + SDK (Phase 6), flows/SLA (Phase 7).
+- **Scoped applications, Pro-Code TypeScript SDK (`@steward/sdk`), and Update Sets**:
+  application scopes (`sys_scope`) with automatic `<scope>_<element>` storage column prefixing on cross-scope
+  table extensions, runtime cross-scope access guard (`sys_scope_privilege` for tables and Script Includes),
+  deterministic UUIDv5 package deployment (`deployPackage`) with `sys_metadata_file` customization protection
+  (`customer_modified = true` skipped on upgrade), safe `uninstallApp`, Update Set capture/export/import
+  (`sys_update_set` + `sys_update_xml`), live TypeScript `.d.ts` generation, and the dogfood `apps/itsm`
+  (`x_steward_itsm`) package. See ADR 0008.
+- **Durable Flows, Approvals, and SLA Engine**:
+  durable flow state machine (`sys_hub_flow`, `sys_flow_context`, `sys_flow_step`) supporting `update_record`,
+  `create_record`, `log`, `event`, `notify`, `run_script`, `if` branching, `wait_for_condition`, and
+  `ask_for_approval` (`sysapproval_approver`, pausing in `waiting` state and resuming across worker restarts),
+  plus declarative SLA definitions (`contract_sla`) and task SLA timers (`task_sla`) with start, pause,
+  resume (shifting `planned_end_time` by paused duration), completion, and breach event (`sla.breached`)
+  evaluation. See ADR 0009.

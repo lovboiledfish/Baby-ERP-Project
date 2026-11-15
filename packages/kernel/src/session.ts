@@ -25,6 +25,8 @@ export interface Session {
    * are still enforced against `roles`.
    */
   readonly script?: boolean;
+  /** Application scope (`sys_scope.scope`) in which the operation or script executes (defaults to `'global'`). */
+  readonly scope?: string;
   /** Set while an admin impersonates this user: the real user behind the session. */
   readonly impersonator?: { readonly userId: string; readonly userName: string };
 }
@@ -32,8 +34,14 @@ export interface Session {
 const EMPTY: ReadonlySet<string> = Object.freeze(new Set<string>());
 
 /** A privileged, ACL-bypassing session. `userName` only controls attribution (sys_created_by, audit). */
-export function systemSession(userName = 'system'): Session {
-  return Object.freeze({ userName, userId: null, roles: EMPTY, groups: EMPTY, system: true });
+export function systemSession(userName = 'system', scope = 'global'): Session {
+  return Object.freeze({ userName, userId: null, roles: EMPTY, groups: EMPTY, system: true, scope });
+}
+
+/** Return a copy of `session` bound to a specific application `scope`. */
+export function withScope(session: Session, scope: string): Session {
+  if ((session.scope ?? 'global') === scope) return session;
+  return Object.freeze({ ...session, scope });
 }
 
 /**
@@ -41,7 +49,7 @@ export function systemSession(userName = 'system'): Session {
  * Bypasses normal table/field ACLs (`system: true`), while still enforcing
  * elevated-role (`security_admin`) and `sys_user_session` guards (`script: true`).
  */
-export function scriptSession(caller: Session, keepRoles = false): Session {
+export function scriptSession(caller: Session, keepRoles = false, scope?: string): Session {
   return Object.freeze({
     userName: caller.userName,
     userId: caller.userId,
@@ -49,6 +57,7 @@ export function scriptSession(caller: Session, keepRoles = false): Session {
     groups: caller.groups,
     system: true,
     script: true,
+    scope: scope ?? caller.scope ?? 'global',
     impersonator: caller.impersonator,
   });
 }

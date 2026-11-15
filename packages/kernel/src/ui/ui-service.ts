@@ -27,7 +27,8 @@ export interface UiTable {
   numberPrefix: string | null;
 }
 
-export interface UiField extends FieldDescription {
+export interface UiField extends Omit<FieldDescription, 'scope'> {
+  scope?: string;
   /** For reference fields: the display field of the referenced table (for pickers). */
   referenceDisplayField: string | null;
 }

@@ -64,7 +64,22 @@ export {
   ValidationError,
   toStewardError,
 } from './errors';
-export { SYSTEM_SESSION, scriptSession, systemSession, type Session } from './session';
+export { SYSTEM_SESSION, scriptSession, systemSession, withScope, type Session } from './session';
+export {
+  AppService,
+  TRACKED_METADATA_TABLES,
+  computeChecksum,
+  deterministicSysId,
+  type DeployResult,
+  type InstalledApp,
+  type MetadataFileRecord,
+  type ScopePrivilege,
+  type UninstallResult,
+  type UpdateSetBundle,
+  type UpdateSetEntry,
+} from './app/app-service';
+export { FlowService, type FlowDefinition } from './flow/flow-service';
+export { SlaService, type SlaDefinition } from './flow/sla-service';
 export {
   UiService,
   type ActivityEntry,

@@ -1,4 +1,6 @@
 import { randomBytes } from 'node:crypto';
+import { registerAppHooks } from './app/app-hooks';
+import { AppService } from './app/app-service';
 import { bootstrap } from './bootstrap/system-tables';
 import { DataEngine } from './data/data-engine';
 import { GlideRecord } from './data/glide-record';
@@ -7,6 +9,9 @@ import type { Db } from './db/db';
 import { PgliteDb } from './db/pglite';
 import { registerEventHooks } from './events/event-hooks';
 import { EventService, type EventServiceOptions } from './events/event-service';
+import { registerFlowHooks } from './flow/flow-hooks';
+import { FlowService } from './flow/flow-service';
+import { SlaService } from './flow/sla-service';
 import { MetaApi } from './meta/meta-api';
 import { registerMetadataHooks } from './meta/meta-hooks';
 import { MetaService } from './meta/meta-service';
@@ -50,6 +55,9 @@ export class Instance {
     readonly acl: AclService,
     readonly scripts: ScriptService,
     readonly events: EventService,
+    readonly apps: AppService,
+    readonly flows: FlowService,
+    readonly slas: SlaService,
     readonly engine: DataEngine,
     readonly metaApi: MetaApi,
     readonly auth: AuthService,
@@ -68,13 +76,21 @@ export class Instance {
     await scripts.load(db);
     const events = new EventService(meta, scripts, opts.events);
     await events.load(db);
+    const apps = new AppService(meta);
+    await apps.load(db);
+    const flows = new FlowService(meta, scripts);
+    await flows.load(db);
+    const slas = new SlaService(meta);
+    await slas.load(db);
     const hooks = new HookRegistry();
     registerMetadataHooks(hooks);
     registerSecurityHooks(hooks);
     registerUiHooks(hooks);
     registerScriptHooks(hooks);
     registerEventHooks(hooks);
-    const engine = new DataEngine(db, meta, hooks, acl, scripts, events);
+    registerAppHooks(hooks);
+    registerFlowHooks(hooks);
+    const engine = new DataEngine(db, meta, hooks, acl, scripts, events, apps, flows, slas);
     const instance = new Instance(
       db,
       meta,
@@ -82,6 +98,9 @@ export class Instance {
       acl,
       scripts,
       events,
+      apps,
+      flows,
+      slas,
       engine,
       new MetaApi(engine),
       new AuthService(engine, acl, opts),

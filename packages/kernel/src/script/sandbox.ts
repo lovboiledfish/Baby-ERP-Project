@@ -74,6 +74,8 @@ export interface ScriptExecRequest {
   event?: ScriptEventBinding;
   /** Active Script Includes (`name -> script`) available for lazy loading. */
   includes?: ReadonlyMap<string, string>;
+  /** Scope metadata for active Script Includes (`name -> { scope, apiName }`) for cross-scope access checks. */
+  includeScopes?: ReadonlyMap<string, { scope: string; apiName: string }>;
   /** Override the runtime's default timeout for this execution. */
   timeoutMs?: number;
 }
@@ -193,6 +195,7 @@ export class ScriptRuntime {
     const readOnly = Boolean(req.readOnly);
     const forceSecure = Boolean(req.forceSecure);
     const includes = req.includes ?? new Map<string, string>();
+    const includeScopes = req.includeScopes ?? new Map<string, { scope: string; apiName: string }>();
 
     let hostCalls = 0;
     let lastHostError: StewardError | null = null;
@@ -246,6 +249,7 @@ export class ScriptRuntime {
           readOnly,
           forceSecure,
           includes,
+          includeScopes,
           logs,
           messages,
         });
@@ -318,6 +322,7 @@ export class ScriptRuntime {
       readOnly: boolean;
       forceSecure: boolean;
       includes: ReadonlyMap<string, string>;
+      includeScopes: ReadonlyMap<string, { scope: string; apiName: string }>;
       logs: ScriptLogEntry[];
       messages: ScriptMessage[];
     },
@@ -423,6 +428,10 @@ export class ScriptRuntime {
         const name = String(payload.name ?? '');
         const src = ctx.includes.get(name);
         if (src === undefined) throw new ValidationError(`Script include "${name}" does not exist or is inactive`);
+        const meta = ctx.includeScopes.get(name);
+        if (meta && engine.apps) {
+          engine.apps.assertScriptIncludeScopeAccess(ctx.session.scope, meta.scope, name, meta.apiName);
+        }
         return src;
       }
       case 'gr:init': {

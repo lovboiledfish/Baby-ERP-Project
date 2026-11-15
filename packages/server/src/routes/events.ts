@@ -37,6 +37,7 @@ export function eventRoutes(instance: Instance): FastifyPluginAsync {
           triggers_run: res.triggersRun,
           events_processed: res.eventsProcessed,
           emails_sent: res.emailsSent,
+          sla_breaches: res.slaBreaches,
         },
       };
     });

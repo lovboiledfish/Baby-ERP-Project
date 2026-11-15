@@ -16,8 +16,11 @@ import { titleize } from '../util';
  *   4  Phase 4: server scripting (sys_script business rules, sys_script_include, ACL scripts)
  *   5  Phase 5: events (sys_event, sysevent_script_action), scheduled jobs (sys_trigger),
  *               email notifications (sysevent_email_action, sys_email), client scripts & UI policies
+ *   6  Phase 6 & 7: scoped apps (sys_scope, sys_scope_privilege, sys_app_version, sys_metadata_file,
+ *               sys_update_set, sys_update_xml), flows (sys_hub_flow, sys_flow_context, sys_flow_step,
+ *               sysapproval_approver), and SLAs (contract_sla, task_sla)
  */
-export const BOOTSTRAP_VERSION = 5;
+export const BOOTSTRAP_VERSION = 6;
 const VERSION_PROPERTY = 'glide.steward.bootstrap_version';
 
 interface BootstrapField {
@@ -547,6 +550,303 @@ export const SYSTEM_TABLES: BootstrapTable[] = [
       { element: 'cleared', type: 'boolean', defaultValue: 'false', label: 'Clear the field value' },
     ],
   },
+  // ---------------------------------------- scoped apps, update sets, flows, SLAs (v6)
+  {
+    name: 'sys_scope',
+    label: 'Application',
+    fields: [
+      { element: 'scope', type: 'string', maxLength: 40, mandatory: true, label: 'Scope' },
+      { element: 'name', type: 'string', maxLength: 100, mandatory: true, display: true, label: 'Name' },
+      { element: 'version', type: 'string', maxLength: 40, defaultValue: '1.0.0', label: 'Version' },
+      { element: 'vendor', type: 'string', maxLength: 80, label: 'Vendor' },
+      { element: 'short_description', type: 'string', maxLength: 255, label: 'Short description' },
+      { element: 'description', type: 'text', label: 'Description' },
+      { element: 'active', type: 'boolean', defaultValue: 'true' },
+    ],
+    unique: [['scope']],
+  },
+  {
+    name: 'sys_scope_privilege',
+    label: 'Cross-Scope Privilege',
+    fields: [
+      { element: 'source_scope', type: 'string', maxLength: 40, mandatory: true, label: 'Source scope' },
+      { element: 'target_scope', type: 'string', maxLength: 40, mandatory: true, label: 'Target scope' },
+      { element: 'target_name', type: 'string', maxLength: 100, mandatory: true, display: true, label: 'Target name' },
+      {
+        element: 'target_type',
+        type: 'choice',
+        mandatory: true,
+        defaultValue: 'sys_db_object',
+        label: 'Target type',
+        choices: [
+          { value: 'sys_db_object', label: 'Table' },
+          { value: 'sys_script_include', label: 'Script Include' },
+        ],
+      },
+      {
+        element: 'operation',
+        type: 'choice',
+        mandatory: true,
+        defaultValue: 'read',
+        choices: [
+          { value: 'read', label: 'Read' },
+          { value: 'write', label: 'Write' },
+          { value: 'create', label: 'Create' },
+          { value: 'delete', label: 'Delete' },
+          { value: 'execute', label: 'Execute' },
+        ],
+      },
+      {
+        element: 'status',
+        type: 'choice',
+        mandatory: true,
+        defaultValue: 'allowed',
+        choices: [
+          { value: 'requested', label: 'Requested' },
+          { value: 'allowed', label: 'Allowed' },
+          { value: 'denied', label: 'Denied' },
+        ],
+      },
+    ],
+    indexes: [['source_scope', 'target_scope']],
+  },
+  {
+    name: 'sys_app_version',
+    label: 'Installed Application Version',
+    fields: [
+      { element: 'scope', type: 'string', maxLength: 40, mandatory: true, display: true, label: 'Scope' },
+      { element: 'name', type: 'string', maxLength: 100, label: 'Name' },
+      { element: 'version', type: 'string', maxLength: 40, mandatory: true, label: 'Version' },
+      { element: 'action', type: 'string', maxLength: 40, label: 'Action' },
+      { element: 'manifest', type: 'json', label: 'Package manifest' },
+      { element: 'installed_by', type: 'string', maxLength: 80, label: 'Installed by' },
+      { element: 'installed_on', type: 'datetime', readOnly: true, label: 'Installed on' },
+    ],
+    indexes: [['scope']],
+  },
+  {
+    name: 'sys_metadata_file',
+    label: 'Application File',
+    audit: false,
+    fields: [
+      { element: 'scope', type: 'string', maxLength: 40, mandatory: true, label: 'Scope' },
+      { element: 'table_name', type: 'string', maxLength: 80, mandatory: true, label: 'Metadata table' },
+      { element: 'record_sys_id', type: 'guid', mandatory: true, label: 'Record ID' },
+      { element: 'artifact_key', type: 'string', maxLength: 160, mandatory: true, display: true, label: 'Artifact key' },
+      { element: 'version', type: 'string', maxLength: 40, label: 'Version' },
+      { element: 'checksum', type: 'string', maxLength: 64, label: 'Checksum' },
+      { element: 'customer_modified', type: 'boolean', defaultValue: 'false', label: 'Customer modified' },
+    ],
+    unique: [['table_name', 'record_sys_id']],
+    indexes: [['scope']],
+  },
+  {
+    name: 'sys_update_set',
+    label: 'Update Set',
+    fields: [
+      { element: 'name', type: 'string', maxLength: 100, mandatory: true, display: true },
+      { element: 'scope', type: 'string', maxLength: 40, defaultValue: 'global', label: 'Application' },
+      {
+        element: 'state',
+        type: 'choice',
+        defaultValue: 'in_progress',
+        choices: [
+          { value: 'in_progress', label: 'In progress' },
+          { value: 'complete', label: 'Complete' },
+          { value: 'committed', label: 'Committed' },
+        ],
+      },
+      { element: 'is_default', type: 'boolean', defaultValue: 'false', label: 'Default set' },
+      { element: 'description', type: 'text' },
+    ],
+  },
+  {
+    name: 'sys_update_xml',
+    label: 'Customer Update',
+    audit: false,
+    fields: [
+      ref('update_set', 'sys_update_set', { label: 'Update set' }),
+      { element: 'name', type: 'string', maxLength: 160, mandatory: true, display: true, label: 'Update name' },
+      { element: 'table_name', type: 'string', maxLength: 80, mandatory: true, label: 'Table' },
+      { element: 'record_sys_id', type: 'guid', mandatory: true, label: 'Target sys_id' },
+      {
+        element: 'action',
+        type: 'choice',
+        mandatory: true,
+        defaultValue: 'update',
+        choices: [
+          { value: 'insert', label: 'Insert' },
+          { value: 'update', label: 'Update' },
+          { value: 'delete', label: 'Delete' },
+          { value: 'INSERT_OR_UPDATE', label: 'INSERT_OR_UPDATE' },
+          { value: 'DELETE', label: 'DELETE' },
+        ],
+      },
+      { element: 'payload', type: 'json', mandatory: true, label: 'Payload' },
+      { element: 'customer', type: 'boolean', defaultValue: 'true', label: 'Customer layer' },
+    ],
+  },
+  {
+    name: 'sys_hub_flow',
+    label: 'Flow',
+    fields: [
+      { element: 'name', type: 'string', maxLength: 120, mandatory: true, display: true },
+      { element: 'table', type: 'string', maxLength: 80, label: 'Trigger table' },
+      {
+        element: 'trigger_type',
+        type: 'choice',
+        mandatory: true,
+        defaultValue: 'record_created',
+        label: 'Trigger',
+        choices: [
+          { value: 'record_created', label: 'Record created' },
+          { value: 'record_updated', label: 'Record updated' },
+          { value: 'record_created_or_updated', label: 'Record created or updated' },
+          { value: 'event', label: 'Event fired' },
+        ],
+      },
+      { element: 'event_name', type: 'string', maxLength: 120, label: 'Event name' },
+      { element: 'condition', type: 'text', label: 'Trigger condition' },
+      { element: 'run_as', type: 'string', maxLength: 40, defaultValue: 'system', label: 'Run as' },
+      { element: 'steps', type: 'json', mandatory: true, label: 'Flow steps' },
+      { element: 'active', type: 'boolean', defaultValue: 'true' },
+      { element: 'description', type: 'text' },
+    ],
+    indexes: [['table']],
+  },
+  {
+    name: 'sys_flow_context',
+    label: 'Flow Context',
+    audit: false,
+    fields: [
+      ref('flow', 'sys_hub_flow', { label: 'Flow' }),
+      { element: 'name', type: 'string', maxLength: 120, display: true, label: 'Flow name' },
+      { element: 'trigger_table', type: 'string', maxLength: 80, label: 'Trigger table' },
+      { element: 'trigger_record', type: 'guid', label: 'Trigger record' },
+      {
+        element: 'state',
+        type: 'choice',
+        defaultValue: 'in_progress',
+        choices: [
+          { value: 'in_progress', label: 'In progress' },
+          { value: 'waiting', label: 'Waiting' },
+          { value: 'complete', label: 'Complete' },
+          { value: 'cancelled', label: 'Cancelled' },
+          { value: 'error', label: 'Error' },
+        ],
+      },
+      { element: 'current_step', type: 'integer', defaultValue: '0', label: 'Current step index' },
+      { element: 'waiting_for_approval', type: 'guid', label: 'Waiting for approval' },
+      { element: 'context_data', type: 'json', label: 'Context data' },
+      { element: 'started_on', type: 'datetime', readOnly: true, label: 'Started on' },
+      { element: 'completed_on', type: 'datetime', readOnly: true, label: 'Completed on' },
+      { element: 'error_message', type: 'text', readOnly: true, label: 'Error' },
+    ],
+    indexes: [['state'], ['trigger_record']],
+  },
+  {
+    name: 'sys_flow_step',
+    label: 'Flow Step',
+    audit: false,
+    fields: [
+      ref('context', 'sys_flow_context', { label: 'Flow context' }),
+      { element: 'step_index', type: 'integer', mandatory: true, label: 'Step index' },
+      { element: 'step_id', type: 'string', maxLength: 80, mandatory: true, display: true, label: 'Step ID' },
+      { element: 'step_name', type: 'string', maxLength: 160, label: 'Step name' },
+      { element: 'step_type', type: 'string', maxLength: 60, mandatory: true, label: 'Step type' },
+      {
+        element: 'state',
+        type: 'choice',
+        defaultValue: 'in_progress',
+        choices: [
+          { value: 'in_progress', label: 'In progress' },
+          { value: 'waiting', label: 'Waiting' },
+          { value: 'complete', label: 'Complete' },
+          { value: 'skipped', label: 'Skipped' },
+          { value: 'error', label: 'Error' },
+        ],
+      },
+      { element: 'input', type: 'json', label: 'Input' },
+      { element: 'output', type: 'json', label: 'Output' },
+      { element: 'started_on', type: 'datetime', readOnly: true, label: 'Started on' },
+      { element: 'completed_on', type: 'datetime', readOnly: true, label: 'Completed on' },
+      { element: 'error_message', type: 'text', readOnly: true, label: 'Error' },
+    ],
+  },
+  {
+    name: 'sysapproval_approver',
+    label: 'Approval',
+    fields: [
+      { element: 'source_table', type: 'string', maxLength: 80, label: 'Source table' },
+      { element: 'document_id', type: 'guid', label: 'Approving record' },
+      ref('approver', 'sys_user', { label: 'Approver' }),
+      {
+        element: 'state',
+        type: 'choice',
+        defaultValue: 'requested',
+        display: true,
+        choices: [
+          { value: 'requested', label: 'Requested' },
+          { value: 'approved', label: 'Approved' },
+          { value: 'rejected', label: 'Rejected' },
+          { value: 'cancelled', label: 'Cancelled' },
+        ],
+      },
+      { element: 'flow_context', type: 'reference', reference: 'sys_flow_context', label: 'Flow context' },
+      { element: 'step_id', type: 'string', maxLength: 80, label: 'Flow step ID' },
+      { element: 'due_date', type: 'datetime', label: 'Due date' },
+      { element: 'comments', type: 'text', label: 'Comments' },
+    ],
+    indexes: [['document_id'], ['state']],
+  },
+  {
+    name: 'contract_sla',
+    label: 'SLA Definition',
+    fields: [
+      { element: 'name', type: 'string', maxLength: 120, mandatory: true, display: true },
+      { element: 'collection', type: 'string', maxLength: 80, mandatory: true, label: 'Table' },
+      { element: 'duration_seconds', type: 'integer', mandatory: true, defaultValue: '3600', label: 'Duration (seconds)' },
+      { element: 'start_condition', type: 'text', mandatory: true, label: 'Start condition' },
+      { element: 'pause_condition', type: 'text', label: 'Pause condition' },
+      { element: 'stop_condition', type: 'text', mandatory: true, label: 'Stop condition' },
+      { element: 'reset_condition', type: 'text', label: 'Reset condition' },
+      { element: 'active', type: 'boolean', defaultValue: 'true' },
+      { element: 'description', type: 'text' },
+    ],
+    indexes: [['collection']],
+  },
+  {
+    name: 'task_sla',
+    label: 'Task SLA',
+    audit: false,
+    fields: [
+      ref('sla', 'contract_sla', { label: 'SLA definition' }),
+      { element: 'task', type: 'guid', mandatory: true, display: true, label: 'Task record' },
+      { element: 'task_table', type: 'string', maxLength: 80, mandatory: true, label: 'Task table' },
+      {
+        element: 'stage',
+        type: 'choice',
+        defaultValue: 'in_progress',
+        choices: [
+          { value: 'in_progress', label: 'In progress' },
+          { value: 'paused', label: 'Paused' },
+          { value: 'completed', label: 'Completed' },
+          { value: 'breached', label: 'Breached' },
+          { value: 'cancelled', label: 'Cancelled' },
+        ],
+      },
+      { element: 'start_time', type: 'datetime', label: 'Start time' },
+      { element: 'pause_time', type: 'datetime', label: 'Pause time' },
+      { element: 'end_time', type: 'datetime', label: 'Stop time' },
+      { element: 'planned_end_time', type: 'datetime', label: 'Planned end time' },
+      { element: 'pause_duration', type: 'integer', defaultValue: '0', label: 'Pause duration (seconds)' },
+      { element: 'business_duration', type: 'integer', defaultValue: '0', label: 'Elapsed (seconds)' },
+      { element: 'percentage', type: 'decimal', defaultValue: '0', label: 'Elapsed (%)' },
+      { element: 'has_breached', type: 'boolean', defaultValue: 'false', label: 'Has breached' },
+      { element: 'active', type: 'boolean', defaultValue: 'true', label: 'Active' },
+    ],
+    indexes: [['task'], ['stage']],
+  },
 ];
 
 export async function isBootstrapped(db: Db): Promise<boolean> {
@@ -763,6 +1063,36 @@ const SEED_STEPS: Array<{ version: number; run(tx: Db): Promise<void> }> = [
       }
     },
   },
+  {
+    version: 6,
+    async run(tx) {
+      const globalScope = await findId(tx, 'sys_scope', 'scope', 'global');
+      if (!globalScope) {
+        await insertRow(tx, 'sys_scope', {
+          scope: 'global',
+          name: 'Global',
+          version: '1.0.0',
+          vendor: 'Steward',
+          short_description: 'Global application scope',
+          active: true,
+        });
+      }
+      const defaultSet = await findId(tx, 'sys_update_set', 'name', 'Default');
+      if (!defaultSet) {
+        await insertRow(tx, 'sys_update_set', {
+          name: 'Default',
+          scope: 'global',
+          state: 'in_progress',
+          is_default: true,
+          description: 'Default global update set',
+        });
+      }
+      for (const [name, elements] of SEED_LIST_LAYOUTS) {
+        const exists = await tx.query(`SELECT 1 FROM "sys_ui_list" WHERE "name" = $1 AND "view" = 'default'`, [name]);
+        if (!exists.rows.length) await insertRow(tx, 'sys_ui_list', { name, view: 'default', elements });
+      }
+    },
+  },
 ];
 
 /** Default list columns for system tables: [table, comma-separated field paths]. */
@@ -792,4 +1122,16 @@ const SEED_LIST_LAYOUTS: Array<[string, string]> = [
   ['sys_script_client', 'name,table,type,field_name,order,active'],
   ['sys_ui_policy', 'short_description,table,conditions,on_load,reverse_if_false,order,active'],
   ['sys_ui_policy_action', 'ui_policy,field,mandatory,visible,disabled,cleared'],
+  ['sys_scope', 'scope,name,version,vendor,active,sys_updated_on'],
+  ['sys_scope_privilege', 'source_scope,target_scope,target_name,target_type,operation,status'],
+  ['sys_app_version', 'scope,name,version,action,installed_on'],
+  ['sys_metadata_file', 'scope,table_name,artifact_key,record_sys_id,customer_modified'],
+  ['sys_update_set', 'name,scope,state,is_default,sys_updated_on'],
+  ['sys_update_xml', 'update_set,name,table_name,action,customer,sys_created_on'],
+  ['sys_hub_flow', 'name,table,trigger_type,condition,active,sys_updated_on'],
+  ['sys_flow_context', 'name,flow,trigger_table,trigger_record,state,current_step,waiting_for_approval,started_on'],
+  ['sys_flow_step', 'context,step_index,step_id,step_type,state,started_on'],
+  ['sysapproval_approver', 'source_table,document_id,approver,state,flow_context,sys_updated_on'],
+  ['contract_sla', 'name,collection,duration_seconds,start_condition,stop_condition,active'],
+  ['task_sla', 'sla,task_table,task,stage,business_duration,percentage,has_breached,planned_end_time'],
 ];

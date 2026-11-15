@@ -88,5 +88,8 @@ export const BUILTIN_RELATED: Readonly<Record<string, string[]>> = {
     'sysevent_email_action.collection=name',
     'sys_script_client.table=name',
     'sys_ui_policy.table=name',
+    'sys_hub_flow.table=name',
+    'contract_sla.collection=name',
   ],
+  sys_scope: ['sys_scope_privilege.source_scope=scope', 'sys_metadata_file.scope=scope'],
 };

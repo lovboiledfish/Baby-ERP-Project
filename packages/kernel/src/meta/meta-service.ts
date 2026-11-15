@@ -12,6 +12,7 @@ interface TableRow {
   is_extendable: boolean | null;
   number_prefix: string | null;
   audit: boolean | null;
+  sys_scope: string | null;
 }
 
 interface DictRow {
@@ -28,6 +29,7 @@ interface DictRow {
   active: boolean | null;
   display: boolean | null;
   read_only: boolean | null;
+  sys_scope: string | null;
 }
 
 interface ChoiceRow {
@@ -52,11 +54,11 @@ export class MetaService {
   async load(db: Db): Promise<void> {
     const [tablesRes, dictRes, choiceRes] = [
       await db.query<TableRow>(
-        `SELECT sys_id, name, label, super_class, physical_name, is_extendable, number_prefix, audit FROM sys_db_object`,
+        `SELECT sys_id, name, label, super_class, physical_name, is_extendable, number_prefix, audit, sys_scope FROM sys_db_object`,
       ),
       await db.query<DictRow>(
         `SELECT sys_id, name, element, column_label, internal_type, reference, max_length, mandatory,
-                default_value, column_name, active, display, read_only
+                default_value, column_name, active, display, read_only, sys_scope
            FROM sys_dictionary ORDER BY sys_created_on, element`,
       ),
       await db.query<ChoiceRow>(
@@ -78,6 +80,7 @@ export class MetaService {
         extendable: r.is_extendable !== false,
         numberPrefix: r.number_prefix ?? null,
         audit: r.audit !== false,
+        scope: r.sys_scope ?? 'global',
         ownFields: new Map(),
         children: [],
       });
@@ -119,6 +122,7 @@ export class MetaService {
         display: d.display === true,
         readOnly: d.read_only === true,
         system: false,
+        scope: d.sys_scope ?? t.scope ?? 'global',
         choices: choices.get(`${d.name}.${d.element}`) ?? [],
       });
     }
@@ -194,6 +198,7 @@ export class MetaService {
         display: false,
         readOnly: true,
         system: true,
+        scope: 'global',
         choices: [],
       });
     }
